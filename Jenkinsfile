@@ -5,7 +5,7 @@ pipeline {
             agent any
             steps {
                 // Manually define the Git checkout instead of using checkout scm
-                git branch: 'main', url: 'https://github.com/your-org/your-repo.git'
+                git branch: 'main', url: 'https://github.com/e032372/archivista-integration.git'
             }
         }
         
