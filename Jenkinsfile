@@ -2,85 +2,70 @@ pipeline {
   agent any
 
   environment {
-    ARCHIVISTA_URL = credentials('archivista-url') ?:
-                     'http://archivista:8082'   // fallback if you don't use credentials
+    // If Archivista is a container on the same Docker network (Option A):
+    ARCHIVISTA_URL = 'http://archivista:8082'
+    // If Archivista is a host process (Option B), use the line below instead:
+    // ARCHIVISTA_URL = 'http://host.docker.internal:8082'
   }
 
   stages {
-    stage('Prepare: keys & sanity') {
+    stage('Install Witness CLI') {
       steps {
         sh '''
           set -euxo pipefail
-
-          # Show Witness version (preinstalled in the Jenkins image)
+          # Install Witness (from official docs)
+          bash <(curl -s https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh)
           witness version
+        '''
+      }
+    }
 
-          # Generate demo Ed25519 keypair (replace with KMS or keyless for real pipelines)
+    stage('Generate Signing Keys (demo)') {
+      steps {
+        sh '''
+          set -euxo pipefail
+          # Demo-only Ed25519 keypair for signing attestations.
+          # In real pipelines, use KMS/Sigstore/OIDC keyless as appropriate.
           openssl genpkey -algorithm ed25519 -out testkey.pem
           openssl pkey -in testkey.pem -pubout > testpub.pem
-
-          # Sanity: confirm Archivista is reachable from this container
-          curl -fsS "${ARCHIVISTA_URL}/health" || true
         '''
       }
     }
 
-    stage('Build (attested)') {
+    stage('Build & Attest') {
       steps {
         sh '''
           set -euxo pipefail
 
-          # "Build" a trivial artifact to keep the demo language-agnostic
-          echo "Hello, Archivista!" > artifact.txt
+          # Example "build" – replace with your real build command
+          mkdir -p dist
+          echo "hello $(date)" > dist/app.txt
 
-          # Record an attestation for the build step and push to Archivista
+          # Create an attestation and upload to Archivista
+          # --enable-archivista + --archivista-server is the documented way
           witness run \
             --step build \
+            --signer-file-key-path testkey.pem \
             --enable-archivista \
             --archivista-server "${ARCHIVISTA_URL}" \
-            --signer-file-key-path testkey.pem \
-            -o build.att.json \
-            -- sh -c "echo build complete"
-
-          # Compute the subject digest for later lookup
-          sha256sum artifact.txt | tee artifact.sha256
+            -o attestations/build.json -- \
+            bash -lc 'echo "Simulated build complete"'
         '''
       }
     }
 
-    stage('Test (attested)') {
+    stage('Verify (optional policy)') {
+      when { expression { return fileExists('testpub.pem') } }
       steps {
         sh '''
           set -euxo pipefail
-
-          # Record a test step attestation and push to Archivista
-          witness run \
-            --step test \
-            --enable-archivista \
-            --archivista-server "${ARCHIVISTA_URL}" \
-            --signer-file-key-path testkey.pem \
-            -o test.att.json \
-            -- sh -c "grep -q Archivista artifact.txt && echo tests passed"
-        '''
-      }
-    }
-
-    stage('Verify from Archivista') {
-      steps {
-        sh '''
-          set -euxo pipefail
-
-          # Extract sha256 digest and ask Witness to find related attestations in Archivista
-          ART_SHA="$(cut -d' ' -f1 artifact.sha256)"
-
-          # witness verify can use archivista as a source; we don't supply a policy here,
-          # but we provide --subjects to prove lookups and connectivity end-to-end.
+          # Minimal example: verify using the local attestation file we just produced.
+          # (You can also pass --policy and use --enable-archivista to retrieve attestations from Archivista.)
           witness verify \
+            --attestations attestations/build.json \
             --enable-archivista \
             --archivista-server "${ARCHIVISTA_URL}" \
-            --subjects "sha256:${ART_SHA}" || true
-
-          echo "Verified lookup for subject sha256:${ART_SHA} against ${ARCHIVISTA_URL}"
+            -k testpub.pem
         '''
       }
     }
@@ -88,7 +73,6 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: '*.att.json,*.sha256,*.pem', fingerprint: true
+      archiveArtifacts artifacts: 'attestations/**/*.json, dist/**', fingerprint: true
     }
   }
-}
