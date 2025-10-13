@@ -1,9 +1,14 @@
+// Jenkinsfile
+// Pipeline: Witness attestation → store in Archivista → policy-based verification
+
 pipeline {
   agent any
 
   environment {
-    ARCHIVISTA_URL = 'http://archivista:8082'   // Archivista on the same Docker network
-    // ARCHIVISTA_URL = 'http://host.docker.internal:8082'  // if Archivista runs on the host
+    // Archivista reachable on the same Docker host/network
+    ARCHIVISTA_URL = 'http://archivista:8082'
+    // If Archivista runs natively on the host, you can use:
+    // ARCHIVISTA_URL = 'http://host.docker.internal:8082'
   }
 
   stages {
@@ -13,6 +18,7 @@ pipeline {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
+# Install Witness from official script (no process substitution to avoid shell portability issues)
 curl -sSL https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh -o install-witness.sh
 bash install-witness.sh
 witness version
@@ -25,14 +31,15 @@ witness version
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-# Demo keypair for attestations/policy signing (ed25519)
+# Demo Ed25519 keypair for signing attestations & policy
+# For production, prefer Sigstore keyless or a KMS (see Witness docs).
 openssl genpkey -algorithm ed25519 -out testkey.pem
 openssl pkey -in testkey.pem -pubout > testpub.pem
 '''
       }
     }
 
-    stage('Build & Attest') {
+    stage('Build & Attest (store in Archivista)') {
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
@@ -40,7 +47,8 @@ set -x
 mkdir -p dist attestations
 echo "hello $(date)" > dist/app.txt
 
-# Create attestation and upload to Archivista
+# Create an attestation and upload to Archivista
+# --enable-archivista + --archivista-server are the documented flags for storing in Archivista.
 witness run \
   --step build \
   --signer-file-key-path testkey.pem \
@@ -49,25 +57,23 @@ witness run \
   -o attestations/build.json -- \
   bash -lc 'echo "Simulated build complete"'
 '''
-        // Stash build outputs for later stages
+        // Make outputs available to later stages (agnostic of node/container changes)
         stash name: 'witness-out', includes: 'dist/**,attestations/**'
       }
     }
 
-    // >>> NEW: create a minimal policy and sign it
     stage('Create & Sign Policy') {
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
+# Compute the functionary KeyID exactly as Witness does: SHA-256 of the DER SubjectPublicKeyInfo
+KEYID="$(openssl pkey -pubin -in testpub.pem -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+# Embed the public key as base64 DER in the policy (robust across key types)
+PUBKEY_B64="$(openssl pkey -pubin -in testpub.pem -outform DER 2>/dev/null | base64 | tr -d '\\n\\r')"
 
-# Prepare a minimal policy JSON (no external tools). Fields mirror the tutorial's policy template:
-# - single 'build' step
-# - expects material/product/command-run attestations
-# - trusts our public key by keyid, with base64 public key in the publickeys map
-KEYID="$(sha256sum testpub.pem | awk '{print $1}')"              # policy publickeyid
-PUBKEY_B64="$(openssl base64 -A < testpub.pem)"                  # base64 of PEM
-
+# Minimal policy: single 'build' step requiring material/product/command-run attestations
+# and trusting the functionary identified by KEYID.
 cat > policy.json <<'POLICY'
 {
   "expires": "2035-12-17T23:57:40-05:00",
@@ -93,17 +99,17 @@ cat > policy.json <<'POLICY'
 }
 POLICY
 
-# Inject our real KEYID and base64 public key
+# Inject the real KEYID and base64 DER public key
 sed -i "s|KEYID_PLACEHOLDER|${KEYID}|g" policy.json
 sed -i "s|PUBKEY_BASE64_PLACEHOLDER|${PUBKEY_B64}|g" policy.json
 
-# Sign the policy into DSSE envelope (policy-signed.json)
+# Sign the policy into a DSSE envelope (policy-signed.json)
 witness sign \
   --signer-file-key-path testkey.pem \
   -f policy.json \
   -o policy-signed.json
 '''
-        // Stash the signed policy too
+        // Stash the signed policy as well
         stash name: 'policy-out', includes: 'policy*.json'
       }
     }
@@ -113,15 +119,16 @@ witness sign \
       steps {
         unstash 'witness-out'
         unstash 'policy-out'
-
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
+# Sanity checks
 test -f dist/app.txt
 test -f attestations/build.json
 test -f policy-signed.json
 
-# Verify attestations against the signed policy with the policy's public key
+# Verify attestations against the signed policy using the policy's public key for trust
+# (This is the documented flow for policy verification.)
 witness verify \
   --attestations attestations/build.json \
   -f dist/app.txt \
