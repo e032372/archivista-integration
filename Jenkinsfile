@@ -144,3 +144,4 @@ witness verify \
       archiveArtifacts artifacts: 'attestations/**/*.json, dist/**, policy*.json', fingerprint: true
     }
   }
+}
