@@ -71,7 +71,7 @@ pipeline {
       DIGEST="$(sha256sum dist/app.txt | awk '{print $1}')"
       witness verify \
         --attestations attestations/build.json \
-        -f dist/app.txt \
+        --subjects "sha256:${DIGEST}" \
         -k testpub.pem
       '''
       }
