@@ -4,7 +4,7 @@ pipeline {
   environment {
     // If Archivista is a container on the same Docker network:
     ARCHIVISTA_URL = 'http://archivista:8082'
-    // If Archivista runs on the host, use:
+    // If Archivista is a host process, use:
     // ARCHIVISTA_URL = 'http://host.docker.internal:8082'
   }
 
@@ -14,7 +14,7 @@ pipeline {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-# Install Witness (per official docs). Avoid process substitution complexity by downloading first.
+# Install Witness (per official docs) without process substitution
 curl -sSL https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh -o install-witness.sh
 bash install-witness.sh
 witness version
@@ -27,8 +27,7 @@ witness version
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-# Demo-only Ed25519 keypair for signing attestations.
-# For real pipelines, prefer KMS or Sigstore keyless.
+# Demo-only Ed25519 keypair; for production use KMS/Sigstore keyless
 openssl genpkey -algorithm ed25519 -out testkey.pem
 openssl pkey -in testkey.pem -pubout > testpub.pem
 '''
@@ -37,16 +36,13 @@ openssl pkey -in testkey.pem -pubout > testpub.pem
 
     stage('Build & Attest') {
       steps {
+        // Do the build and create the attestation
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-
-# Example "build" – replace with your real build command
 mkdir -p dist attestations
 echo "hello $(date)" > dist/app.txt
 
-# Create an attestation and upload to Archivista
-# --enable-archivista + --archivista-server are the documented flags
 witness run \
   --step build \
   --signer-file-key-path testkey.pem \
@@ -54,18 +50,18 @@ witness run \
   --archivista-server "${ARCHIVISTA_URL}" \
   -o attestations/build.json -- \
   bash -lc 'echo "Simulated build complete"'
-
-# Make outputs available to later stages even if they run on a different executor/container
-stash name: 'witness-out', includes: 'dist/**,attestations/**'
 '''
+        // Now stash the outputs (Jenkins step, not a shell command)
+        stash name: 'witness-out', includes: 'dist/**,attestations/**'
       }
     }
 
     stage('Verify (optional policy)') {
       when { expression { return fileExists('testpub.pem') } }
       steps {
-        // Bring back build outputs (safe across agents/containers)
+        // Restore the files for this stage
         unstash 'witness-out'
+
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
@@ -74,7 +70,7 @@ set -x
 test -f dist/app.txt
 test -f attestations/build.json
 
-# Simplest: verify by file path (no digest required)
+# Verify using artifact file (simplest)
 witness verify \
   --attestations attestations/build.json \
   -f dist/app.txt \
