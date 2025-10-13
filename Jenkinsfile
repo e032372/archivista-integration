@@ -69,10 +69,10 @@ pipeline {
           # Minimal example: verify using the local attestation file we just produced.
           # (You can also pass --policy and use --enable-archivista to retrieve attestations from Archivista.)
           witness verify \
-            --attestations attestations/build.json \
             --enable-archivista \
             --archivista-server "${ARCHIVISTA_URL}" \
-            -f dist/app.txt \
+            --subjects "sha256:<DIGEST>" \
+            -p policy.json \
             -k testpub.pem
           "
         '''
