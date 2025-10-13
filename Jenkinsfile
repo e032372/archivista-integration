@@ -25,11 +25,13 @@ pipeline {
     stage('Generate Signing Keys (demo)') {
       steps {
         sh '''
+          bash -lc "
           set -euxo pipefail
           # Demo-only Ed25519 keypair for signing attestations.
           # In real pipelines, use KMS/Sigstore/OIDC keyless as appropriate.
           openssl genpkey -algorithm ed25519 -out testkey.pem
           openssl pkey -in testkey.pem -pubout > testpub.pem
+          "
         '''
       }
     }
@@ -37,6 +39,7 @@ pipeline {
     stage('Build & Attest') {
       steps {
         sh '''
+          bash -lc "
           set -euxo pipefail
 
           # Example "build" – replace with your real build command
@@ -52,6 +55,7 @@ pipeline {
             --archivista-server "${ARCHIVISTA_URL}" \
             -o attestations/build.json -- \
             bash -lc 'echo "Simulated build complete"'
+          "
         '''
       }
     }
@@ -60,6 +64,7 @@ pipeline {
       when { expression { return fileExists('testpub.pem') } }
       steps {
         sh '''
+          bash -lc "
           set -euxo pipefail
           # Minimal example: verify using the local attestation file we just produced.
           # (You can also pass --policy and use --enable-archivista to retrieve attestations from Archivista.)
@@ -68,6 +73,7 @@ pipeline {
             --enable-archivista \
             --archivista-server "${ARCHIVISTA_URL}" \
             -k testpub.pem
+          "
         '''
       }
     }
