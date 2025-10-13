@@ -2,10 +2,8 @@ pipeline {
   agent any
 
   environment {
-    // If Archivista is a container on the same Docker network:
-    ARCHIVISTA_URL = 'http://archivista:8082'
-    // If Archivista is a host process, use:
-    // ARCHIVISTA_URL = 'http://host.docker.internal:8082'
+    ARCHIVISTA_URL = 'http://archivista:8082'   // Archivista on the same Docker network
+    // For host-process Archivista, use: ARCHIVISTA_URL = 'http://host.docker.internal:8082'
   }
 
   stages {
@@ -14,7 +12,6 @@ pipeline {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-# Install Witness (per official docs) without process substitution
 curl -sSL https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh -o install-witness.sh
 bash install-witness.sh
 witness version
@@ -27,7 +24,6 @@ witness version
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-# Demo-only Ed25519 keypair; for production use KMS/Sigstore keyless
 openssl genpkey -algorithm ed25519 -out testkey.pem
 openssl pkey -in testkey.pem -pubout > testpub.pem
 '''
@@ -36,7 +32,6 @@ openssl pkey -in testkey.pem -pubout > testpub.pem
 
     stage('Build & Attest') {
       steps {
-        // Do the build and create the attestation
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
@@ -51,35 +46,30 @@ witness run \
   -o attestations/build.json -- \
   bash -lc 'echo "Simulated build complete"'
 '''
-        // Now stash the outputs (Jenkins step, not a shell command)
+        // Jenkins step (not shell): move files across stages
         stash name: 'witness-out', includes: 'dist/**,attestations/**'
       }
     }
 
-
-stage('Verify (optional policy)') {
-  when { expression { return fileExists('testpub.pem') } }
-  steps {
-    // Bring back build outputs (safe across agents/containers)
-    unstash 'witness-out'
-
-    sh '''#!/usr/bin/env bash
+    stage('Verify (optional policy)') {
+      when { expression { return fileExists('testpub.pem') } }
+      steps {
+        unstash 'witness-out'
+        sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-
-# Sanity checks
 test -f dist/app.txt
 test -f attestations/build.json
 
-# Verify using local artifact + local attestation (no policy, no Archivista)
+# Local verification using our public key as trust source
 witness verify \
   --attestations attestations/build.json \
-  -f dist/app.txt
+  -f dist/app.txt \
+  -k testpub.pem
 '''
+      }
+    }
   }
-}
-  }
-
 
   post {
     always {
