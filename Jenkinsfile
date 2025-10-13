@@ -76,3 +76,4 @@ pipeline {
       archiveArtifacts artifacts: 'attestations/**/*.json, dist/**', fingerprint: true
     }
   }
+}
