@@ -53,6 +53,7 @@ pipeline {
             --signer-file-key-path testkey.pem \
             --enable-archivista \
             --archivista-server "${ARCHIVISTA_URL}" \
+            -f dist/app.txt \
             -o attestations/build.json -- \
             bash -lc 'echo "Simulated build complete"'
           "
