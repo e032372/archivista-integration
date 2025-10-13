@@ -18,7 +18,7 @@ pipeline {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-# Install Witness from official script (no process substitution to avoid shell portability issues)
+# Install Witness from official script
 curl -sSL https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh -o install-witness.sh
 bash install-witness.sh
 witness version
@@ -48,7 +48,6 @@ mkdir -p dist attestations
 echo "hello $(date)" > dist/app.txt
 
 # Create an attestation and upload to Archivista
-# --enable-archivista + --archivista-server are the documented flags for storing in Archivista.
 witness run \
   --step build \
   --signer-file-key-path testkey.pem \
@@ -69,8 +68,10 @@ set -euo pipefail
 set -x
 # Compute the functionary KeyID exactly as Witness does: SHA-256 of the DER SubjectPublicKeyInfo
 KEYID="$(openssl pkey -pubin -in testpub.pem -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
-# Embed the public key as base64 DER in the policy (robust across key types)
-PUBKEY_B64="$(openssl pkey -pubin -in testpub.pem -outform DER 2>/dev/null | base64 | tr -d '\\n\\r')"
+
+# Embed the public key as base64 of the *PEM text* (NOT DER).
+# When verify decodes it, it must see a valid PEM block.
+PUBKEY_PEM_B64="$(base64 -w0 testpub.pem 2>/dev/null || openssl base64 -A < testpub.pem)"
 
 # Minimal policy: single 'build' step requiring material/product/command-run attestations
 # and trusting the functionary identified by KEYID.
@@ -99,9 +100,9 @@ cat > policy.json <<'POLICY'
 }
 POLICY
 
-# Inject the real KEYID and base64 DER public key
+# Inject the real KEYID and base64 PEM public key
 sed -i "s|KEYID_PLACEHOLDER|${KEYID}|g" policy.json
-sed -i "s|PUBKEY_BASE64_PLACEHOLDER|${PUBKEY_B64}|g" policy.json
+sed -i "s|PUBKEY_BASE64_PLACEHOLDER|${PUBKEY_PEM_B64}|g" policy.json
 
 # Sign the policy into a DSSE envelope (policy-signed.json)
 witness sign \
@@ -128,7 +129,6 @@ test -f attestations/build.json
 test -f policy-signed.json
 
 # Verify attestations against the signed policy using the policy's public key for trust
-# (This is the documented flow for policy verification.)
 witness verify \
   --attestations attestations/build.json \
   -f dist/app.txt \
@@ -144,4 +144,3 @@ witness verify \
       archiveArtifacts artifacts: 'attestations/**/*.json, dist/**, policy*.json', fingerprint: true
     }
   }
-}
