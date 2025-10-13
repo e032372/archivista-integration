@@ -56,13 +56,14 @@ witness run \
       }
     }
 
-    stage('Verify (optional policy)') {
-      when { expression { return fileExists('testpub.pem') } }
-      steps {
-        // Restore the files for this stage
-        unstash 'witness-out'
 
-        sh '''#!/usr/bin/env bash
+stage('Verify (optional policy)') {
+  when { expression { return fileExists('testpub.pem') } }
+  steps {
+    // Bring back build outputs (safe across agents/containers)
+    unstash 'witness-out'
+
+    sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
 
@@ -70,15 +71,14 @@ set -x
 test -f dist/app.txt
 test -f attestations/build.json
 
-# Verify using artifact file (simplest)
+# Verify using local artifact + local attestation (no policy, no Archivista)
 witness verify \
   --attestations attestations/build.json \
-  -f dist/app.txt \
-  -k testpub.pem
+  -f dist/app.txt
 '''
-      }
-    }
   }
+}
+
 
   post {
     always {
