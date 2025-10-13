@@ -51,24 +51,33 @@ witness run \
       }
     }
 
-    stage('Verify (optional policy)') {
-      when { expression { return fileExists('testpub.pem') } }
-      steps {
-        unstash 'witness-out'
-        sh '''#!/usr/bin/env bash
+
+stage('Verify (optional policy)') {
+  when { expression { return fileExists('testpub.pem') } }
+  steps {
+    unstash 'witness-out'
+    sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
+
+# Make sure no implicit config/policy is loaded
+rm -f .witness.yaml || true
+: > /tmp/empty.witness.yaml
+
+# Sanity checks
 test -f dist/app.txt
 test -f attestations/build.json
 
-# Local verification using our public key as trust source
+# Local verification using our public key as trust; bypass any config
 witness verify \
+  --config /tmp/empty.witness.yaml \
   --attestations attestations/build.json \
   -f dist/app.txt \
   -k testpub.pem
 '''
-      }
-    }
+  }
+}
+
   }
 
   post {
