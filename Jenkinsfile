@@ -12,10 +12,12 @@ pipeline {
     stage('Install Witness CLI') {
       steps {
         sh '''
+          bash -lc "
           set -euxo pipefail
           # Install Witness (from official docs)
           bash <(curl -s https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh)
           witness version
+          "
         '''
       }
     }
