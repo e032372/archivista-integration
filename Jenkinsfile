@@ -63,19 +63,17 @@ pipeline {
     stage('Verify (optional policy)') {
       when { expression { return fileExists('testpub.pem') } }
       steps {
-        sh '''
-          bash -lc "
-          set -euxo pipefail
-          # Minimal example: verify using the local attestation file we just produced.
-          # (You can also pass --policy and use --enable-archivista to retrieve attestations from Archivista.)
-          witness verify \
-            --enable-archivista \
-            --archivista-server "${ARCHIVISTA_URL}" \
-            --subjects "sha256:<DIGEST>" \
-            -p policy.json \
-            -k testpub.pem
-          "
-        '''
+      sh '''#!/usr/bin/env bash
+      set -euo pipefail
+      set -x
+
+      # Compute sha256 digest of the artifact and pass it as a subject
+      DIGEST="$(sha256sum dist/app.txt | awk '{print $1}')"
+      witness verify \
+        --attestations attestations/build.json \
+        --subjects "sha256:${DIGEST}" \
+        -k testpub.pem
+      '''
       }
     }
   }
