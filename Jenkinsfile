@@ -4,7 +4,7 @@ pipeline {
 
   environment {
     ARCHIVISTA_URL = 'http://archivista:8082'
-    // Uncomment and adjust to a version that includes the archivist/archivista subcommand:
+    // Optional: set WITNESS_VERSION to pin a version that includes archivist/archivista
     // WITNESS_VERSION = 'v0.3.7'
   }
 
@@ -15,29 +15,31 @@ pipeline {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-# Optional pin: export WITNESS_VERSION if provided
 if [ -n "${WITNESS_VERSION:-}" ]; then
   echo "Pinning Witness to ${WITNESS_VERSION}"
 fi
 curl -sSL https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh -o install-witness.sh
 bash install-witness.sh
 witness version || true
+
 if ! command -v jq >/dev/null 2>&1; then
   curl -L -o /usr/local/bin/jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
   chmod +x /usr/local/bin/jq
 fi
 jq --version || true
 
-echo "Detecting archivist(a) subcommand..."
-if witness help 2>&1 | grep -q '^ *archivist '; then
-  echo "Found subcommand: archivist"
+echo "Detecting archivist/archivista subcommand..."
+HELP_OUT=$(witness help 2>&1 || true)
+echo "$HELP_OUT" | head -n 50
+if echo "$HELP_OUT" | grep -E -q '\\barchivist\\b'; then
   echo archivist > .witness_archi_subcmd
-elif witness help 2>&1 | grep -q '^ *archivista '; then
-  echo "Found subcommand: archivista"
+  echo "Using subcommand: archivist"
+elif echo "$HELP_OUT" | grep -E -q '\\barchivista\\b'; then
   echo archivista > .witness_archi_subcmd
+  echo "Using subcommand: archivista"
 else
-  echo "No archivist/archivista subcommand available."
   echo none > .witness_archi_subcmd
+  echo "No archivist/archivista subcommand available; remote retrieval will be skipped."
 fi
 '''
       }
@@ -80,6 +82,10 @@ witness run \
 set -euo pipefail
 set -x
 SUBCMD=$(cat .witness_archi_subcmd 2>/dev/null || echo none)
+if [ "$SUBCMD" = "none" ]; then
+  echo "Skipping remote verification: no archivist/archivista subcommand."
+  exit 0
+fi
 
 REMOTE=attestations/remote/build-remote.json
 DEC_REMOTE=attestations/remote/build-remote.decoded.json
