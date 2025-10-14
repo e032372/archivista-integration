@@ -1,3 +1,4 @@
+// Jenkinsfile
 pipeline {
   agent any
 
@@ -6,8 +7,7 @@ pipeline {
   }
 
   stages {
-
-    stage('Install Witness CLI') {
+    stage('Install Tools') {
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
@@ -15,6 +15,13 @@ set -x
 curl -sSL https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh -o install-witness.sh
 bash install-witness.sh
 witness version || true
+
+# Install jq (needed to extract subjects)
+if ! command -v jq >/dev/null 2>&1; then
+  curl -L -o /usr/local/bin/jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+  chmod +x /usr/local/bin/jq
+fi
+jq --version || true
 '''
       }
     }
@@ -57,47 +64,31 @@ witness run \
 set -euo pipefail
 set -x
 
-echo "Attempting witness verify with multiple flag variants (local)..."
+file="attestations/build.json"
 
-attempt_verify () {
-  local file="$1"
-  local pub="$2"
-  local success=""
-  # Candidate command forms for differing CLI versions
-  cmds=(
-    "witness verify ${file} --public-key ${pub}"
-    "witness verify --public-key ${pub} ${file}"
-    "witness verify ${file} --key ${pub}"
-    "witness verify --key ${pub} ${file}"
-    "witness verify ${file} --key-file ${pub}"
-    "witness verify --key-file ${pub} ${file}"
-    "witness verify ${file} ${pub}"
-    "witness verify ${file}"
-  )
-  for c in "${cmds[@]}"; do
-    echo "TRY: $c"
-    if eval "$c"; then
-      echo "SUCCESS with: $c"
-      success=1
-      break
-    fi
-  done
-  if [ -z "${success:-}" ]; then
-    echo "All verify attempts failed. Dumping envelope snippet for debugging:"
-    head -c 400 "${file}" || true
-    return 1
-  fi
-}
+echo "Decoding DSSE payload to extract subjects..."
+payload_b64=$(jq -r '.payload' "$file")
+echo "$payload_b64" | base64 -d > attestations/build.decoded.json
 
-# Optional brief look (no jq on agent)
-echo "Envelope first 200 chars:"
-head -c 200 attestations/build.json || true
-echo
+echo "Subjects found:"
+jq -r '.subject[] | "\(.name) \(.digest.sha256)"' attestations/build.decoded.json || true
 
-attempt_verify "attestations/build.json" "testpub.pem"
+# Build --subjects argument list: name=digest pairs
+SUBJECT_ARGS=$(jq -r '.subject[] | "\(.name)=\(.digest.sha256)"' attestations/build.decoded.json | tr '\\n' ' ')
+echo "Using subjects: $SUBJECT_ARGS"
+
+set +e
+witness verify "$file" --subjects $SUBJECT_ARGS
+rc=$?
+set -e
+if [ $rc -ne 0 ]; then
+  echo "Witness verify failed. Dumping first 400 chars of decoded payload:"
+  head -c 400 attestations/build.decoded.json || true
+  exit $rc
+fi
 
 grep -q "hello" dist/app.txt
-echo "Local attestation verification completed."
+echo "Local attestation verification succeeded."
 '''
       }
     }
@@ -107,51 +98,36 @@ echo "Local attestation verification completed."
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
+
+remote="attestations/remote/build-remote.json"
 mkdir -p attestations/remote
 
 witness archivista get \
   --archivista-server "${ARCHIVISTA_URL}" \
   --step build \
-  --output attestations/remote/build-remote.json
+  --output "${remote}"
 
-echo "Attempting witness verify with multiple flag variants (remote)..."
+echo "Decoding remote DSSE payload..."
+payload_b64=$(jq -r '.payload' "$remote")
+echo "$payload_b64" | base64 -d > attestations/remote/build-remote.decoded.json
 
-attempt_verify () {
-  local file="$1"
-  local pub="$2"
-  local success=""
-  cmds=(
-    "witness verify ${file} --public-key ${pub}"
-    "witness verify --public-key ${pub} ${file}"
-    "witness verify ${file} --key ${pub}"
-    "witness verify --key ${pub} ${file}"
-    "witness verify ${file} --key-file ${pub}"
-    "witness verify --key-file ${pub} ${file}"
-    "witness verify ${file} ${pub}"
-    "witness verify ${file}"
-  )
-  for c in "${cmds[@]}"; do
-    echo "TRY: $c"
-    if eval "$c"; then
-      echo "SUCCESS with: $c"
-      success=1
-      break
-    fi
-  done
-  if [ -z "${success:-}" ]; then
-    echo "All remote verify attempts failed. Dumping envelope snippet:"
-    head -c 400 "${file}" || true
-    return 1
-  fi
-}
+echo "Remote subjects:"
+jq -r '.subject[] | "\(.name) \(.digest.sha256)"' attestations/remote/build-remote.decoded.json || true
 
-echo "Remote envelope first 200 chars:"
-head -c 200 attestations/remote/build-remote.json || true
-echo
+REMOTE_SUBJECT_ARGS=$(jq -r '.subject[] | "\(.name)=\(.digest.sha256)"' attestations/remote/build-remote.decoded.json | tr '\\n' ' ')
+echo "Using subjects: $REMOTE_SUBJECT_ARGS"
 
-attempt_verify "attestations/remote/build-remote.json" "testpub.pem"
+set +e
+witness verify "$remote" --subjects $REMOTE_SUBJECT_ARGS
+rc=$?
+set -e
+if [ $rc -ne 0 ]; then
+  echo "Remote witness verify failed. Snippet:"
+  head -c 400 attestations/remote/build-remote.decoded.json || true
+  exit $rc
+fi
 
-echo "Remote attestation verification completed."
+echo "Remote attestation verification succeeded."
 '''
       }
     }
