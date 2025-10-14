@@ -51,62 +51,74 @@ witness run \
     }
 // groovy
     // groovy
+    // Stage replacement for `Jenkinsfile`
 stage('Create & Sign Policy') {
   steps {
     sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
 
-# portable base64 -> one-line PEM
+ATT_FILE="attestations/build.json"
+
+# Preconditions
+[ -r "$ATT_FILE" ] || { echo "Missing $ATT_FILE" >&2; exit 1; }
+
+# Base64 encode public key (single line, portable)
 if command -v base64 >/dev/null 2>&1; then
   PUBKEY_PEM_B64="$(base64 -w0 testpub.pem 2>/dev/null || base64 < testpub.pem)"
 else
   PUBKEY_PEM_B64="$(openssl base64 -A < testpub.pem)"
 fi
 
-KEYID="$(printf '%s' "${PUBKEY_PEM_B64}" | (base64 -d 2>/dev/null || openssl base64 -d 2>/dev/null) | (sha256sum 2>/dev/null || shasum -a 256) | awk '{print $1}')"
+# Compute KEYID (sha256 of decoded PEM)
+KEYID="$(printf '%s' "$PUBKEY_PEM_B64" | (base64 -d 2>/dev/null || openssl base64 -d 2>/dev/null) | (sha256sum 2>/dev/null || shasum -a 256) | awk '{print $1}')"
 
-ATT_FILE="attestations/build.json"
-if [ ! -r "${ATT_FILE}" ]; then
-  echo "attestations/build.json missing or not readable" >&2
-  ls -l attestations || true
-  exit 1
-fi
-
-# write a small Python helper to avoid quoting problems
+# Python helper to find predicateType (handles DSSE payload if needed)
 cat > /tmp/get_pred.py <<'PY'
-import json,sys
+import json, base64, sys
+path = 'attestations/build.json'
 try:
-    d=json.load(open('attestations/build.json'))
+    root = json.load(open(path))
 except Exception:
-    sys.exit(0)
-stack=[d]
-while stack:
-    o=stack.pop()
-    if isinstance(o,dict):
+    sys.exit(1)
+
+def search(o):
+    if isinstance(o, dict):
         if 'predicateType' in o:
-            print(o['predicateType'])
-            sys.exit(0)
+            return o['predicateType']
         for v in o.values():
-            stack.append(v)
-    elif isinstance(o,list):
+            r = search(v)
+            if r:
+                return r
+    elif isinstance(o, list):
         for i in o:
-            stack.append(i)
+            r = search(i)
+            if r:
+                return r
+    return None
+
+pt = search(root)
+if not pt and isinstance(root, dict) and 'payload' in root:
+    # DSSE envelope case
+    try:
+        decoded = json.loads(base64.b64decode(root['payload'] + '=='))
+        pt = search(decoded)
+    except Exception:
+        pass
+
+if not pt:
+    sys.exit(2)
+print(pt)
 PY
 
-PRED_TYPE="$(python3 /tmp/get_pred.py 2>/dev/null || true)"
+PRED_TYPE="$(python3 /tmp/get_pred.py || true)"
 
-# fallback to grep-based extraction
-if [ -z "${PRED_TYPE}" ]; then
-  PRED_TYPE="$(grep -o '\"predicateType\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' "${ATT_FILE}" 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
-fi
-
-if [ -z "${PRED_TYPE}" ]; then
-  echo "Failed to extract predicateType from ${ATT_FILE}" >&2
+if [ -z "$PRED_TYPE" ]; then
+  echo "Failed to extract predicateType from $ATT_FILE" >&2
   exit 1
 fi
 
-# write policy.json using shell variable expansion
+# Write policy.json
 cat > policy.json <<POLICY
 {
   "expires": "2035-12-17T23:57:40-05:00",
@@ -145,15 +157,17 @@ cat > policy.json <<POLICY
 }
 POLICY
 
+# Sign if witness present
 if command -v witness >/dev/null 2>&1; then
   witness sign --signer-file-key-path testkey.pem -f policy.json -o policy-signed.json
 else
-  echo "witness CLI not found; skipping sign step" >&2
+  echo "witness CLI not found; skipping signing" >&2
 fi
 '''
     stash name: 'policy-out', includes: 'policy*.json'
   }
 }
+
 
 
     stage('Verify (policy-based)') {
