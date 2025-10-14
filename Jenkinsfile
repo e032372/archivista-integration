@@ -56,12 +56,21 @@ witness run \
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-witness inspect --file attestations/build.json
 
+# Optional JSON glance (no deprecated inspect command)
+python - <<'EOF'
+import json, pprint
+with open('attestations/build.json') as f:
+  data=json.load(f)
+print("Top-level keys:", list(data.keys()))
+EOF
+
+# Verify signature / provenance
 witness verify \
   --attestation attestations/build.json \
   --public-key testpub.pem
 
+# Simple artifact integrity heuristic
 grep -q "hello" dist/app.txt
 echo "Local attestation verification succeeded."
 '''
@@ -80,7 +89,12 @@ witness archivista get \
   --step build \
   --output attestations/remote/build-remote.json
 
-witness inspect --file attestations/remote/build-remote.json
+python - <<'EOF'
+import json
+with open('attestations/remote/build-remote.json') as f:
+  d=json.load(f)
+print("Remote attestation keys:", list(d.keys()))
+EOF
 
 witness verify \
   --attestation attestations/remote/build-remote.json \
