@@ -64,7 +64,6 @@ else
   PUBKEY_PEM_B64="$(openssl base64 -A < testpub.pem)"
 fi
 
-# compute KEYID (sha256 of decoded PEM)
 KEYID="$(printf '%s' "${PUBKEY_PEM_B64}" | (base64 -d 2>/dev/null || openssl base64 -d 2>/dev/null) | (sha256sum 2>/dev/null || shasum -a 256) | awk '{print $1}')"
 
 ATT_FILE="attestations/build.json"
@@ -95,7 +94,6 @@ while stack:
             stack.append(i)
 PY
 
-# run the helper
 PRED_TYPE="$(python3 /tmp/get_pred.py 2>/dev/null || true)"
 
 # fallback to grep-based extraction
@@ -104,7 +102,7 @@ if [ -z "${PRED_TYPE}" ]; then
 fi
 
 if [ -z "${PRED_TYPE}" ]; then
-  echo "Failed to extract predicateType from \`${ATT_FILE}\`" >&2
+  echo "Failed to extract predicateType from ${ATT_FILE}" >&2
   exit 1
 fi
 
@@ -147,16 +145,13 @@ cat > policy.json <<POLICY
 }
 POLICY
 
-# sign the policy if witness available
 if command -v witness >/dev/null 2>&1; then
   witness sign --signer-file-key-path testkey.pem -f policy.json -o policy-signed.json
 else
   echo "witness CLI not found; skipping sign step" >&2
 fi
-
-# stash generated policy
-stash name: 'policy-out', includes: 'policy*.json'
 '''
+    stash name: 'policy-out', includes: 'policy*.json'
   }
 }
 
