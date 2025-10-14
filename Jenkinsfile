@@ -49,7 +49,49 @@ witness run \
         stash name: 'witness-out', includes: 'dist/**,attestations/**'
       }
     }
+
+    stage('Verify Attestation (local)') {
+      steps {
+        unstash 'witness-out'
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -x
+witness inspect --file attestations/build.json
+
+witness verify \
+  --attestation attestations/build.json \
+  --public-key testpub.pem
+
+grep -q "hello" dist/app.txt
+echo "Local attestation verification succeeded."
+'''
+      }
+    }
+
+    stage('Verify Attestation (from Archivista)') {
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -x
+mkdir -p attestations/remote
+
+witness archivista get \
+  --archivista-server "${ARCHIVISTA_URL}" \
+  --step build \
+  --output attestations/remote/build-remote.json
+
+witness inspect --file attestations/remote/build-remote.json
+
+witness verify \
+  --attestation attestations/remote/build-remote.json \
+  --public-key testpub.pem
+
+echo "Remote (Archivista) attestation verification succeeded."
+'''
+      }
+    }
   }
+
   post {
     always {
       archiveArtifacts artifacts: 'attestations/**/*.json, dist/**, policy*.json', fingerprint: true
