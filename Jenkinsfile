@@ -1,57 +1,3 @@
-// groovy
-pipeline {
-  agent any
-
-  environment {
-    ARCHIVISTA_URL = 'http://archivista:8082'
-  }
-
-  stages {
-
-    stage('Install Witness CLI') {
-      steps {
-        sh '''#!/usr/bin/env bash
-set -euo pipefail
-set -x
-curl -sSL https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh -o install-witness.sh
-bash install-witness.sh
-witness version
-'''
-      }
-    }
-
-    stage('Generate Signing Keys (demo)') {
-      steps {
-        sh '''#!/usr/bin/env bash
-set -euo pipefail
-set -x
-openssl genpkey -algorithm ed25519 -out testkey.pem
-openssl pkey -in testkey.pem -pubout > testpub.pem
-'''
-      }
-    }
-
-    stage('Build & Attest (store in Archivista)') {
-      steps {
-        sh '''#!/usr/bin/env bash
-set -euo pipefail
-set -x
-mkdir -p dist attestations
-echo "hello $(date)" > dist/app.txt
-
-witness run \
-  --step build \
-  --signer-file-key-path testkey.pem \
-  --enable-archivista \
-  --archivista-server "${ARCHIVISTA_URL}" \
-  -o attestations/build.json -- \
-  bash -lc 'echo "Simulated build complete"'
-'''
-        stash name: 'witness-out', includes: 'dist/**,attestations/**'
-      }
-    }
-
-   // groovy
 stage('Create & Sign Policy') {
   steps {
     sh '''#!/usr/bin/env bash
@@ -68,10 +14,8 @@ if [ ! -r "${ATT_FILE}" ]; then
   exit 1
 fi
 
-# extract predicateType using portable grep+cut (no backslash-escaped regexes)
 PRED_TYPE="$(grep -o '"predicateType"[[:space:]]*:[[:space:]]*"[^"]*"' "${ATT_FILE}" 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
 
-# fallback: extract DSSE payload (base64), decode and search there
 if [ -z "${PRED_TYPE}" ]; then
   PAYLOAD_B64="$(grep -o '"payload"[[:space:]]*:[[:space:]]*"[A-Za-z0-9+/=]*"' "${ATT_FILE}" 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
   if [ -n "${PAYLOAD_B64}" ]; then
@@ -80,7 +24,7 @@ if [ -z "${PRED_TYPE}" ]; then
 fi
 
 if [ -z "${PRED_TYPE}" ]; then
-  echo "Failed to extract predicateType from \`${ATT_FILE}\`" >&2
+  echo "Failed to extract predicateType from ${ATT_FILE}" >&2
   exit 1
 fi
 
@@ -122,43 +66,11 @@ cat > policy.json <<'POLICY'
 }
 POLICY
 
-# replace placeholders
 sed -i "s|KEYID_PLACEHOLDER|${KEYID}|g" policy.json
 sed -i "s|PUBKEY_BASE64_PLACEHOLDER|${PUBKEY_PEM_B64}|g" policy.json
 sed -i "s|PRED_PLACEHOLDER|${PRED_TYPE}|g" policy.json
 
-# sign policy
 witness sign --signer-file-key-path testkey.pem -f policy.json -o policy-signed.json
 '''
-  }
-}
-
-
-    stage('Verify (policy-based)') {
-      when { expression { return fileExists('testpub.pem') } }
-      steps {
-        unstash 'witness-out'
-        unstash 'policy-out'
-        sh '''#!/usr/bin/env bash
-set -euo pipefail
-set -x
-test -f dist/app.txt
-test -f attestations/build.json
-test -f policy-signed.json
-
-witness verify \
-  --attestations attestations/build.json \
-  -f dist/app.txt \
-  -p policy-signed.json \
-  -k testpub.pem
-'''
-      }
-    }
-  }
-
-  post {
-    always {
-      archiveArtifacts artifacts: 'attestations/**/*.json, dist/**, policy*.json', fingerprint: true
-    }
   }
 }
