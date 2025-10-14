@@ -1,5 +1,8 @@
 // Jenkinsfile
 // Pipeline: Witness attestation → store in Archivista → policy-based verification
+// NOTE (fix): KEYID is computed from the PEM public key bytes (not DER/SPKI).
+// See: https://witness.dev/docs/docs/concepts/policy/ and
+//      https://witness.dev/docs/docs/tutorials/getting-started/
 
 pipeline {
   agent any
@@ -66,15 +69,17 @@ witness run \
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-# Compute the functionary KeyID exactly as Witness does: SHA-256 of the DER SubjectPublicKeyInfo
-KEYID="$(openssl pkey -pubin -in testpub.pem -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
 
-# Embed the public key as base64 of the *PEM text* (NOT DER).
-# When verify decodes it, it must see a valid PEM block.
+# --- FIX STARTS HERE ---
+# Compute the base64 of the PEM public key (this is what goes in policy.publickeys.*.key)
 PUBKEY_PEM_B64="$(base64 -w0 testpub.pem 2>/dev/null || openssl base64 -A < testpub.pem)"
 
-# Minimal policy: single 'build' step requiring material/product/command-run attestations
-# and trusting the functionary identified by KEYID.
+# Compute KEYID as SHA-256 of the *PEM bytes* (exact bytes we embed above)
+# Using the same bytes (decoded from PUBKEY_PEM_B64) guarantees KEYID === sha256(PEM in policy)
+KEYID="$(echo -n "${PUBKEY_PEM_B64}" | base64 -d | sha256sum | awk '{print $1}')"
+# --- FIX ENDS HERE ---
+
+# Minimal policy: require material/product/command-run and trust the functionary KEYID
 cat > policy.json <<'POLICY'
 {
   "expires": "2035-12-17T23:57:40-05:00",
@@ -103,6 +108,14 @@ POLICY
 # Inject the real KEYID and base64 PEM public key
 sed -i "s|KEYID_PLACEHOLDER|${KEYID}|g" policy.json
 sed -i "s|PUBKEY_BASE64_PLACEHOLDER|${PUBKEY_PEM_B64}|g" policy.json
+
+# Optionally sanity-check that policy.keyid == sha256(policy.key PEM)
+# (leave commented to avoid jq dependency in agents)
+# jq -e --arg keyid "$KEYID" '
+#   .publickeys | to_entries[0].value.key as $k
+# | ($k | @base64d | @sha256) as $calc
+# | ($calc == $keyid)
+# ' policy.json
 
 # Sign the policy into a DSSE envelope (policy-signed.json)
 witness sign \
