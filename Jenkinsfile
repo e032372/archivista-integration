@@ -61,25 +61,19 @@ set -x
 PUBKEY_PEM_B64="$(base64 -w0 testpub.pem 2>/dev/null || openssl base64 -A < testpub.pem)"
 KEYID="$(echo -n "${PUBKEY_PEM_B64}" | base64 -d | sha256sum | awk '{print $1}')"
 
-# extract the product attestation predicateType from the attestation JSON
-# (uses python3 so no jq dependency; adjust to jq if you prefer)
-PRED_TYPE="$(python3 - <<'PY'
-import json,sys
-try:
-    with open('attestations/build.json','r') as f:
-        j=json.load(f)
-    # common field name used by Witness attestations
-    pt = j.get('predicateType') or j.get('predicate_type') or ''
-    if not pt:
-        sys.exit(2)
-    print(pt)
-except FileNotFoundError:
-    sys.exit(3)
-PY
-)"
+# Try to extract predicateType directly from the attestation JSON
+PRED_TYPE="$(sed -n 's/.*"predicateType"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' attestations/build.json | head -n1 || true)"
 
-if [ -z "${PRED_TYPE-}" ]; then
-  echo "Failed to extract predicateType from attestations/build.json" >&2
+# If not found, try to extract the DSSE payload (base64), decode it and look there
+if [ -z "${PRED_TYPE}" ]; then
+  PAYLOAD_B64="$(sed -n 's/.*"payload"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' attestations/build.json | head -n1 || true)"
+  if [ -n "${PAYLOAD_B64}" ]; then
+    PRED_TYPE="$(echo "${PAYLOAD_B64}" | base64 -d 2>/dev/null | sed -n 's/.*"predicateType"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1 || true)"
+  fi
+fi
+
+if [ -z "${PRED_TYPE}" ]; then
+  echo "Failed to extract predicateType from `attestations/build.json`" >&2
   exit 1
 fi
 
@@ -126,9 +120,6 @@ POLICY
 sed -i "s|KEYID_PLACEHOLDER|${KEYID}|g" policy.json
 sed -i "s|PUBKEY_BASE64_PLACEHOLDER|${PUBKEY_PEM_B64}|g" policy.json
 sed -i "s|PRED_PLACEHOLDER|${PRED_TYPE}|g" policy.json
-
-# optional sanity check (requires jq)
-# jq -e --arg keyid "$KEYID" '.publickeys | to_entries[0].value.key as $k | ($k | @base64d | @sha256) as $calc | ($calc == $keyid)' policy.json
 
 # sign policy
 witness sign \
