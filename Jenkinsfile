@@ -61,26 +61,26 @@ set -x
 PUBKEY_PEM_B64="$(base64 -w0 testpub.pem 2>/dev/null || openssl base64 -A < testpub.pem)"
 KEYID="$(printf '%s' "${PUBKEY_PEM_B64}" | base64 -d | sha256sum | awk '{print $1}')"
 
-# ensure file exists and is readable
-if [ ! -r "attestations/build.json" ]; then
+ATT_FILE="attestations/build.json"
+if [ ! -r "${ATT_FILE}" ]; then
   echo "attestations/build.json missing or not readable" >&2
   ls -l attestations || true
   exit 1
 fi
 
-# extract predicateType (portable grep+cut)
-PRED_TYPE="$(grep -o '"predicateType"[[:space:]]*:[[:space:]]*"[^"]*"' attestations/build.json 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
+# extract predicateType using portable grep+cut (no backslash-escaped regexes)
+PRED_TYPE="$(grep -o '"predicateType"[[:space:]]*:[[:space:]]*"[^"]*"' "${ATT_FILE}" 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
 
-# fallback: extract DSSE payload and decode then search there
+# fallback: extract DSSE payload (base64), decode and search there
 if [ -z "${PRED_TYPE}" ]; then
-  PAYLOAD_B64="$(grep -o '"payload"[[:space:]]*:[[:space:]]*"[^"]*"' attestations/build.json 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
+  PAYLOAD_B64="$(grep -o '"payload"[[:space:]]*:[[:space:]]*"[A-Za-z0-9+/=]*"' "${ATT_FILE}" 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
   if [ -n "${PAYLOAD_B64}" ]; then
     PRED_TYPE="$(printf '%s' "${PAYLOAD_B64}" | base64 -d 2>/dev/null | grep -o '"predicateType"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | cut -d\" -f4 || true)"
   fi
 fi
 
 if [ -z "${PRED_TYPE}" ]; then
-  echo "Failed to extract predicateType from `attestations/build.json`" >&2
+  echo "Failed to extract predicateType from \`${ATT_FILE}\`" >&2
   exit 1
 fi
 
@@ -122,17 +122,16 @@ cat > policy.json <<'POLICY'
 }
 POLICY
 
-# substitute placeholders
+# replace placeholders
 sed -i "s|KEYID_PLACEHOLDER|${KEYID}|g" policy.json
 sed -i "s|PUBKEY_BASE64_PLACEHOLDER|${PUBKEY_PEM_B64}|g" policy.json
 sed -i "s|PRED_PLACEHOLDER|${PRED_TYPE}|g" policy.json
 
-# sign the policy
+# sign policy
 witness sign --signer-file-key-path testkey.pem -f policy.json -o policy-signed.json
 '''
   }
 }
-
 
 
     stage('Verify (policy-based)') {
