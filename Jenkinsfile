@@ -49,8 +49,8 @@ witness run \
         stash name: 'witness-out', includes: 'dist/**,attestations/**'
       }
     }
-
-  stage('Create & Sign Policy') {
+// groovy
+stage('Create & Sign Policy') {
   steps {
     sh '''#!/usr/bin/env bash
 set -euo pipefail
@@ -73,35 +73,27 @@ if [ ! -r "${ATT_FILE}" ]; then
   exit 1
 fi
 
-# try Python JSON traversal first (robust), fall back to grep if Python not present
-PRED_TYPE=""
-if command -v python3 >/dev/null 2>&1; then
-  PRED_TYPE="$(python3 - <<'PY' 2>/dev/null
-import json,sys
+# robust extraction: use python3 -c (avoids heredoc/quoting issues)
+PRED_TYPE="$(python3 -c "import json,sys
 try:
-    data = json.load(open('attestations/build.json'))
+    d = json.load(open('attestations/build.json'))
 except Exception:
     sys.exit(0)
-def walk(o):
+def w(o):
     if isinstance(o, dict):
         if 'predicateType' in o:
-            print(o['predicateType'])
-            return True
+            print(o['predicateType']); sys.exit(0)
         for v in o.values():
-            if walk(v):
-                return True
+            w(v)
     elif isinstance(o, list):
         for i in o:
-            if walk(i):
-                return True
-    return False
-walk(data)
-PY
-)"
-fi
+            w(i)
+w(d)
+" 2>/dev/null || true)"
 
+# fallback to grep-based extraction
 if [ -z "${PRED_TYPE}" ]; then
-  PRED_TYPE="$(grep -o '"predicateType"[[:space:]]*:[[:space:]]*\"[^\"]*\"' "${ATT_FILE}" 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
+  PRED_TYPE="$(grep -o '"predicateType"[[:space:]]*:[[:space:]]*"[^"]*"' "${ATT_FILE}" 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
 fi
 
 if [ -z "${PRED_TYPE}" ]; then
@@ -109,7 +101,7 @@ if [ -z "${PRED_TYPE}" ]; then
   exit 1
 fi
 
-# write policy.json using variable expansion (avoids sed portability issues)
+# write policy.json using shell variable expansion
 cat > policy.json <<POLICY
 {
   "expires": "2035-12-17T23:57:40-05:00",
@@ -158,6 +150,7 @@ fi
     stash name: 'policy-out', includes: 'policy*.json'
   }
 }
+
 
 
     stage('Verify (policy-based)') {
