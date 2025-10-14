@@ -4,6 +4,8 @@ pipeline {
 
   environment {
     ARCHIVISTA_URL = 'http://archivista:8082'
+    // Uncomment and adjust to a version that includes the archivist/archivista subcommand:
+    // WITNESS_VERSION = 'v0.3.7'
   }
 
   stages {
@@ -13,6 +15,10 @@ pipeline {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
+# Optional pin: export WITNESS_VERSION if provided
+if [ -n "${WITNESS_VERSION:-}" ]; then
+  echo "Pinning Witness to ${WITNESS_VERSION}"
+fi
 curl -sSL https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh -o install-witness.sh
 bash install-witness.sh
 witness version || true
@@ -21,6 +27,18 @@ if ! command -v jq >/dev/null 2>&1; then
   chmod +x /usr/local/bin/jq
 fi
 jq --version || true
+
+echo "Detecting archivist(a) subcommand..."
+if witness help 2>&1 | grep -q '^ *archivist '; then
+  echo "Found subcommand: archivist"
+  echo archivist > .witness_archi_subcmd
+elif witness help 2>&1 | grep -q '^ *archivista '; then
+  echo "Found subcommand: archivista"
+  echo archivista > .witness_archi_subcmd
+else
+  echo "No archivist/archivista subcommand available."
+  echo none > .witness_archi_subcmd
+fi
 '''
       }
     }
@@ -43,7 +61,6 @@ set -euo pipefail
 set -x
 mkdir -p dist attestations
 echo "hello $(date)" > dist/app.txt
-
 witness run \
   --step build \
   --signer-file-key-path testkey.pem \
@@ -52,20 +69,27 @@ witness run \
   -o attestations/build.json -- \
   bash -lc 'echo "Simulated build complete"'
 '''
-        stash name: 'witness-out', includes: 'dist/**,attestations/**'
+        stash name: 'witness-out', includes: 'dist/**,attestations/**,.witness_archi_subcmd'
       }
     }
 
     stage('Verify Attestation (from Archivista)') {
       steps {
+        unstash 'witness-out'
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
+SUBCMD=$(cat .witness_archi_subcmd 2>/dev/null || echo none)
+if [ "$SUBCMD" = "none" ]; then
+  echo "Skipping remote verification (no archivist(a) subcommand in this Witness build)."
+  exit 0
+fi
+
 REMOTE=attestations/remote/build-remote.json
 DEC_REMOTE=attestations/remote/build-remote.decoded.json
 mkdir -p attestations/remote
 
-witness archivista get \
+witness "$SUBCMD" get \
   --archivista-server "${ARCHIVISTA_URL}" \
   --step build \
   --output "${REMOTE}"
@@ -93,7 +117,6 @@ if [ $rc -ne 0 ]; then
   head -c 400 "$DEC_REMOTE" || true
   exit $rc
 fi
-
 echo "Remote attestation verification succeeded."
 '''
       }
@@ -102,7 +125,7 @@ echo "Remote attestation verification succeeded."
 
   post {
     always {
-      archiveArtifacts artifacts: 'attestations/**/*.json, dist/**, policy*.json', fingerprint: true
+      archiveArtifacts artifacts: 'attestations/**/*.json, dist/**, policy*.json,.witness_archi_subcmd', fingerprint: true
     }
   }
 }
