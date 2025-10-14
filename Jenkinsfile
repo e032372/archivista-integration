@@ -1,4 +1,3 @@
-// groovy
 pipeline {
   agent any
 
@@ -51,10 +50,9 @@ witness run \
       }
     }
 
-   // groovy
-stage('Create & Sign Policy') {
-  steps {
-    sh '''#!/usr/bin/env bash
+    stage('Create & Sign Policy') {
+      steps {
+        sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
 
@@ -80,7 +78,7 @@ if [ -z "${PRED_TYPE}" ]; then
 fi
 
 if [ -z "${PRED_TYPE}" ]; then
-  echo "Failed to extract predicateType from \`${ATT_FILE}\`" >&2
+  echo "Failed to extract predicateType from ${ATT_FILE}" >&2
   exit 1
 fi
 
@@ -130,9 +128,9 @@ sed -i "s|PRED_PLACEHOLDER|${PRED_TYPE}|g" policy.json
 # sign policy
 witness sign --signer-file-key-path testkey.pem -f policy.json -o policy-signed.json
 '''
-  }
-}
-
+        stash name: 'policy-out', includes: 'policy*.json'
+      }
+    }
 
     stage('Verify (policy-based)') {
       when { expression { return fileExists('testpub.pem') } }
