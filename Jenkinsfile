@@ -4,8 +4,8 @@ pipeline {
 
   environment {
     ARCHIVISTA_URL = 'http://archivista:8082'
-    // Optionally pin; leave blank to auto-latest. Example: WITNESS_VERSION = 'v0.4.3'
-    // WITNESS_VERSION = 'v0.4.3'
+    // Optional: set WITNESS_VERSION to pin a version that includes archivist/archivista
+    // WITNESS_VERSION = 'v0.3.7'
   }
 
   stages {
@@ -15,72 +15,119 @@ pipeline {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-
-# ---- Install Witness (with tag validation) ----
-REQ_TAG="${WITNESS_VERSION:-}"
-if [ -n "$REQ_TAG" ]; then
-  if git ls-remote --exit-code --tags https://github.com/in-toto/witness "refs/tags/${REQ_TAG}" >/dev/null 2>&1; then
-    USE_TAG="$REQ_TAG"
-  else
-    echo "Requested tag ${REQ_TAG} not found. Discovering latest..."
-    USE_TAG=$(git ls-remote --tags https://github.com/in-toto/witness \
-      | awk -F/ '/refs\\/tags\\/v[0-9]/{print $3}' \
-      | grep -v '{}' | sort -V | tail -1)
-    echo "Falling back to ${USE_TAG}"
-  fi
-else
-  echo "No WITNESS_VERSION provided. Using latest tag."
-  USE_TAG=$(git ls-remote --tags https://github.com/in-toto/witness \
-    | awk -F/ '/refs\\/tags\\/v[0-9]/{print $3}' \
-    | grep -v '{}' | sort -V | tail -1)
+if [ -n "${WITNESS_VERSION:-}" ]; then
+  echo "Pinning Witness to ${WITNESS_VERSION}"
 fi
-echo "Installing Witness tag: ${USE_TAG}"
-
-# Minimal Go toolchain if needed
-if ! command -v go >/dev/null 2>&1; then
-  curl -sSL https://go.dev/dl/go1.22.5.linux-amd64.tar.gz -o go.tgz
-  tar -C /usr/local -xzf go.tgz
-  export PATH=/usr/local/go/bin:$PATH
-fi
-
-# Try subdirectory form first; if it fails, try root
-set +e
-go install "github.com/in-toto/witness/cmd/witness@${USE_TAG}"
-rc=$?
-if [ $rc -ne 0 ]; then
-  echo "Subdir install failed (rc=$rc). Trying root path..."
-  go install "github.com/in-toto/witness@${USE_TAG}"
-  rc=$?
-fi
-set -e
-if [ $rc -ne 0 ]; then
-  echo "Failed to install Witness at tag ${USE_TAG}"
-  exit 1
-fi
-
+curl -sSL https://raw.githubusercontent.com/in-toto/witness/main/install-witness.sh -o install-witness.sh
+bash install-witness.sh
 witness version || true
 
-# ---- Detect archivist / archivista subcommand ----
-HELP=$(witness help 2>&1 || true)
-if echo "$HELP" | grep -E -q '\\barchivist\\b'; then
-  echo archivist > .witness_archi_subcmd
-elif echo "$HELP" | grep -E -q '\\barchivista\\b'; then
-  echo archivista > .witness_archi_subcmd
-else
-  echo none > .witness_archi_subcmd
-  echo "WARNING: No archivist/archivista subcommand present in ${USE_TAG}"
-fi
-
-# ---- jq ----
 if ! command -v jq >/dev/null 2>&1; then
   curl -L -o /usr/local/bin/jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
   chmod +x /usr/local/bin/jq
 fi
-jq --version
+jq --version || true
+
+echo "Detecting archivist/archivista subcommand..."
+HELP_OUT=$(witness help 2>&1 || true)
+echo "$HELP_OUT" | head -n 50
+if echo "$HELP_OUT" | grep -E -q '\\barchivist\\b'; then
+  echo archivist > .witness_archi_subcmd
+  echo "Using subcommand: archivist"
+elif echo "$HELP_OUT" | grep -E -q '\\barchivista\\b'; then
+  echo archivista > .witness_archi_subcmd
+  echo "Using subcommand: archivista"
+else
+  echo none > .witness_archi_subcmd
+  echo "No archivist/archivista subcommand available; remote retrieval will be skipped."
+fi
 '''
       }
     }
 
-    // (retain your remaining stages unchanged)
+    stage('Generate Signing Keys (demo)') {
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -x
+openssl genpkey -algorithm ed25519 -out testkey.pem
+openssl pkey -in testkey.pem -pubout > testpub.pem
+'''
+      }
+    }
+
+    stage('Build & Attest (store in Archivista)') {
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -x
+mkdir -p dist attestations
+echo "hello $(date)" > dist/app.txt
+witness run \
+  --step build \
+  --signer-file-key-path testkey.pem \
+  --enable-archivista \
+  --archivista-server "${ARCHIVISTA_URL}" \
+  -o attestations/build.json -- \
+  bash -lc 'echo "Simulated build complete"'
+'''
+        stash name: 'witness-out', includes: 'dist/**,attestations/**,.witness_archi_subcmd'
+      }
+    }
+
+    stage('Verify Attestation (from Archivista)') {
+      steps {
+        unstash 'witness-out'
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -x
+SUBCMD=$(cat .witness_archi_subcmd 2>/dev/null || echo none)
+if [ "$SUBCMD" = "none" ]; then
+  echo "Skipping remote verification: no archivist/archivista subcommand."
+  exit 0
+fi
+
+REMOTE=attestations/remote/build-remote.json
+DEC_REMOTE=attestations/remote/build-remote.decoded.json
+mkdir -p attestations/remote
+
+witness "$SUBCMD" get \
+  --archivista-server "${ARCHIVISTA_URL}" \
+  --step build \
+  --output "${REMOTE}"
+
+jq -r '.payload' "$REMOTE" | base64 -d > "$DEC_REMOTE"
+
+echo "Remote subjects (name sha256):"
+jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC_REMOTE" || true
+
+REMOTE_SUBJECT_FLAGS=""
+while IFS=$'\\t' read -r name digest; do
+  [ -z "${name:-}" ] && continue
+  [ -z "${digest:-}" ] && continue
+  REMOTE_SUBJECT_FLAGS+=" --subjects ${name}=${digest}"
+done < <(jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC_REMOTE")
+
+echo "Using remote subject flags:${REMOTE_SUBJECT_FLAGS}"
+
+set +e
+witness verify "$REMOTE" --publickey testpub.pem ${REMOTE_SUBJECT_FLAGS}
+rc=$?
+set -e
+if [ $rc -ne 0 ]; then
+  echo "Remote witness verify failed. Decoded payload snippet:"
+  head -c 400 "$DEC_REMOTE" || true
+  exit $rc
+fi
+echo "Remote attestation verification succeeded."
+'''
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: 'attestations/**/*.json, dist/**, policy*.json,.witness_archi_subcmd', fingerprint: true
+    }
   }
 }
