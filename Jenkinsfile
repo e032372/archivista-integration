@@ -50,6 +50,7 @@ witness run \
       }
     }
 // groovy
+    // groovy
 stage('Create & Sign Policy') {
   steps {
     sh '''#!/usr/bin/env bash
@@ -73,31 +74,37 @@ if [ ! -r "${ATT_FILE}" ]; then
   exit 1
 fi
 
-# robust extraction: use python3 -c (avoids heredoc/quoting issues)
-PRED_TYPE="$(python3 -c "import json,sys
+# write a small Python helper to avoid quoting problems
+cat > /tmp/get_pred.py <<'PY'
+import json,sys
 try:
-    d = json.load(open('attestations/build.json'))
+    d=json.load(open('attestations/build.json'))
 except Exception:
     sys.exit(0)
-def w(o):
-    if isinstance(o, dict):
+stack=[d]
+while stack:
+    o=stack.pop()
+    if isinstance(o,dict):
         if 'predicateType' in o:
-            print(o['predicateType']); sys.exit(0)
+            print(o['predicateType'])
+            sys.exit(0)
         for v in o.values():
-            w(v)
-    elif isinstance(o, list):
+            stack.append(v)
+    elif isinstance(o,list):
         for i in o:
-            w(i)
-w(d)
-" 2>/dev/null || true)"
+            stack.append(i)
+PY
+
+# run the helper
+PRED_TYPE="$(python3 /tmp/get_pred.py 2>/dev/null || true)"
 
 # fallback to grep-based extraction
 if [ -z "${PRED_TYPE}" ]; then
-  PRED_TYPE="$(grep -o '"predicateType"[[:space:]]*:[[:space:]]*"[^"]*"' "${ATT_FILE}" 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
+  PRED_TYPE="$(grep -o '\"predicateType\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' "${ATT_FILE}" 2>/dev/null | head -n1 | cut -d\" -f4 || true)"
 fi
 
 if [ -z "${PRED_TYPE}" ]; then
-  echo "Failed to extract predicateType from ${ATT_FILE}" >&2
+  echo "Failed to extract predicateType from \`${ATT_FILE}\`" >&2
   exit 1
 fi
 
@@ -140,17 +147,18 @@ cat > policy.json <<POLICY
 }
 POLICY
 
-# sign policy if witness available
+# sign the policy if witness available
 if command -v witness >/dev/null 2>&1; then
   witness sign --signer-file-key-path testkey.pem -f policy.json -o policy-signed.json
 else
   echo "witness CLI not found; skipping sign step" >&2
 fi
+
+# stash generated policy
+stash name: 'policy-out', includes: 'policy*.json'
 '''
-    stash name: 'policy-out', includes: 'policy*.json'
   }
 }
-
 
 
     stage('Verify (policy-based)') {
