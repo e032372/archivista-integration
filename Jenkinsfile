@@ -49,7 +49,7 @@ witness run \
         stash name: 'witness-out', includes: 'dist/**,attestations/**'
       }
     }
-
+  }
   post {
     always {
       archiveArtifacts artifacts: 'attestations/**/*.json, dist/**, policy*.json', fingerprint: true
