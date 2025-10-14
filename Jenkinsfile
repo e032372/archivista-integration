@@ -1,4 +1,4 @@
-// Jenkinsfile (patched sections)
+// Jenkinsfile
 pipeline {
   agent any
 
@@ -7,6 +7,7 @@ pipeline {
   }
 
   stages {
+
     stage('Install Tools') {
       steps {
         sh '''#!/usr/bin/env bash
@@ -61,25 +62,32 @@ witness run \
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-file="attestations/build.json"
+ATT=attestations/build.json
+DEC=attestations/build.decoded.json
 
-# Decode DSSE payload
-jq -r '.payload' "$file" | base64 -d > attestations/build.decoded.json
+jq -r '.payload' "$ATT" | base64 -d > "$DEC"
 
 echo "Subjects (name sha256):"
-jq -r '.subject[] | [.name, .digest.sha256] | @tsv' attestations/build.decoded.json || true
+jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC" || true
 
-# Build SUBJECT_ARGS: name=digest pairs
-SUBJECT_ARGS=$(jq -r '.subject[] | [.name, .digest.sha256] | @tsv' attestations/build.decoded.json | awk '{printf "%s=%s ",$1,$2} END{print ""}')
-echo "Using subjects: ${SUBJECT_ARGS}"
+# Build subject flags safely
+SUBJECT_FLAGS=""
+while IFS=$'\\t' read -r name digest; do
+  [ -z "${name:-}" ] && continue
+  [ -z "${digest:-}" ] && continue
+  SUBJECT_FLAGS+=" --subjects ${name}=${digest}"
+done < <(jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC")
+
+echo "Using subject flags:${SUBJECT_FLAGS}"
 
 set +e
-witness verify "$file" --subjects ${SUBJECT_ARGS}
+# Use correct flag: --publickey
+witness verify "$ATT" --publickey testpub.pem ${SUBJECT_FLAGS}
 rc=$?
 set -e
 if [ $rc -ne 0 ]; then
-  echo "Witness verify failed. Payload snippet:"
-  head -c 400 attestations/build.decoded.json || true
+  echo "Witness verify failed. Decoded payload snippet:"
+  head -c 400 "$DEC" || true
   exit $rc
 fi
 
@@ -94,29 +102,36 @@ echo "Local attestation verification succeeded."
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-remote="attestations/remote/build-remote.json"
+REMOTE=attestations/remote/build-remote.json
+DEC_REMOTE=attestations/remote/build-remote.decoded.json
 mkdir -p attestations/remote
 
 witness archivista get \
   --archivista-server "${ARCHIVISTA_URL}" \
   --step build \
-  --output "${remote}"
+  --output "${REMOTE}"
 
-jq -r '.payload' "$remote" | base64 -d > attestations/remote/build-remote.decoded.json
+jq -r '.payload' "$REMOTE" | base64 -d > "$DEC_REMOTE"
 
 echo "Remote subjects (name sha256):"
-jq -r '.subject[] | [.name, .digest.sha256] | @tsv' attestations/remote/build-remote.decoded.json || true
+jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC_REMOTE" || true
 
-REMOTE_SUBJECT_ARGS=$(jq -r '.subject[] | [.name, .digest.sha256] | @tsv' attestations/remote/build-remote.decoded.json | awk '{printf "%s=%s ",$1,$2} END{print ""}')
-echo "Using remote subjects: ${REMOTE_SUBJECT_ARGS}"
+REMOTE_SUBJECT_FLAGS=""
+while IFS=$'\\t' read -r name digest; do
+  [ -z "${name:-}" ] && continue
+  [ -z "${digest:-}" ] && continue
+  REMOTE_SUBJECT_FLAGS+=" --subjects ${name}=${digest}"
+done < <(jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC_REMOTE")
+
+echo "Using remote subject flags:${REMOTE_SUBJECT_FLAGS}"
 
 set +e
-witness verify "$remote" --subjects ${REMOTE_SUBJECT_ARGS}
+witness verify "$REMOTE" --publickey testpub.pem ${REMOTE_SUBJECT_FLAGS}
 rc=$?
 set -e
 if [ $rc -ne 0 ]; then
-  echo "Remote witness verify failed. Snippet:"
-  head -c 400 attestations/remote/build-remote.decoded.json || true
+  echo "Remote witness verify failed. Decoded payload snippet:"
+  head -c 400 "$DEC_REMOTE" || true
   exit $rc
 fi
 
