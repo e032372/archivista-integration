@@ -57,9 +57,33 @@ witness run \
 set -euo pipefail
 set -x
 
+# compute base64 PEM and KEYID as before
 PUBKEY_PEM_B64="$(base64 -w0 testpub.pem 2>/dev/null || openssl base64 -A < testpub.pem)"
 KEYID="$(echo -n "${PUBKEY_PEM_B64}" | base64 -d | sha256sum | awk '{print $1}')"
 
+# extract the product attestation predicateType from the attestation JSON
+# (uses python3 so no jq dependency; adjust to jq if you prefer)
+PRED_TYPE="$(python3 - <<'PY'
+import json,sys
+try:
+    with open('attestations/build.json','r') as f:
+        j=json.load(f)
+    # common field name used by Witness attestations
+    pt = j.get('predicateType') or j.get('predicate_type') or ''
+    if not pt:
+        sys.exit(2)
+    print(pt)
+except FileNotFoundError:
+    sys.exit(3)
+PY
+)"
+
+if [ -z "${PRED_TYPE-}" ]; then
+  echo "Failed to extract predicateType from attestations/build.json" >&2
+  exit 1
+fi
+
+# write policy template with a collection verifier that specifies the predicate type
 cat > policy.json <<'POLICY'
 {
   "expires": "2035-12-17T23:57:40-05:00",
@@ -81,7 +105,8 @@ cat > policy.json <<'POLICY'
           "verifiers": [
             {
               "type": "attestation",
-              "attestation_type": "https://witness.dev/attestations/product/v0.1"
+              "attestation_type": "https://witness.dev/attestations/product/v0.1",
+              "predicate_type": "PRED_PLACEHOLDER"
             }
           ]
         }
@@ -97,9 +122,15 @@ cat > policy.json <<'POLICY'
 }
 POLICY
 
+# replace placeholders
 sed -i "s|KEYID_PLACEHOLDER|${KEYID}|g" policy.json
 sed -i "s|PUBKEY_BASE64_PLACEHOLDER|${PUBKEY_PEM_B64}|g" policy.json
+sed -i "s|PRED_PLACEHOLDER|${PRED_TYPE}|g" policy.json
 
+# optional sanity check (requires jq)
+# jq -e --arg keyid "$KEYID" '.publickeys | to_entries[0].value.key as $k | ($k | @base64d | @sha256) as $calc | ($calc == $keyid)' policy.json
+
+# sign policy
 witness sign \
   --signer-file-key-path testkey.pem \
   -f policy.json \
