@@ -52,6 +52,7 @@ witness run \
 // groovy
     // groovy
     // Stage replacement for `Jenkinsfile`
+// Groovy
 stage('Create & Sign Policy') {
   steps {
     sh '''#!/usr/bin/env bash
@@ -59,66 +60,44 @@ set -euo pipefail
 set -x
 
 ATT_FILE="attestations/build.json"
-
-# Preconditions
 [ -r "$ATT_FILE" ] || { echo "Missing $ATT_FILE" >&2; exit 1; }
 
-# Base64 encode public key (single line, portable)
+# Get one-line base64 public key
 if command -v base64 >/dev/null 2>&1; then
   PUBKEY_PEM_B64="$(base64 -w0 testpub.pem 2>/dev/null || base64 < testpub.pem)"
 else
   PUBKEY_PEM_B64="$(openssl base64 -A < testpub.pem)"
 fi
 
-# Compute KEYID (sha256 of decoded PEM)
+# Compute KEYID
 KEYID="$(printf '%s' "$PUBKEY_PEM_B64" | (base64 -d 2>/dev/null || openssl base64 -d 2>/dev/null) | (sha256sum 2>/dev/null || shasum -a 256) | awk '{print $1}')"
 
-# Python helper to find predicateType (handles DSSE payload if needed)
-cat > /tmp/get_pred.py <<'PY'
-import json, base64, sys
-path = 'attestations/build.json'
-try:
-    root = json.load(open(path))
-except Exception:
-    sys.exit(1)
+PRED_TYPE=""
 
-def search(o):
-    if isinstance(o, dict):
-        if 'predicateType' in o:
-            return o['predicateType']
-        for v in o.values():
-            r = search(v)
-            if r:
-                return r
-    elif isinstance(o, list):
-        for i in o:
-            r = search(i)
-            if r:
-                return r
-    return None
+# 1. jq direct search (recursive)
+if command -v jq >/dev/null 2>&1; then
+  PRED_TYPE="$(jq -r '.. | objects | select(has("predicateType")) | .predicateType | halt' "$ATT_FILE" 2>/dev/null || true)"
+  # 2. If empty, attempt DSSE payload decode then search
+  if [ -z "$PRED_TYPE" ]; then
+    HAS_PAYLOAD="$(jq -e 'has("payload")' "$ATT_FILE" 2>/dev/null || true)"
+    if [ "$HAS_PAYLOAD" = "true" ]; then
+      PT_FROM_PAYLOAD="$(jq -r '.payload' "$ATT_FILE" 2>/dev/null | base64 -d 2>/dev/null | jq -r '.. | objects | select(has("predicateType")) | .predicateType | halt' 2>/dev/null || true)"
+      [ -n "$PT_FROM_PAYLOAD" ] && PRED_TYPE="$PT_FROM_PAYLOAD"
+    fi
+  fi
+fi
 
-pt = search(root)
-if not pt and isinstance(root, dict) and 'payload' in root:
-    # DSSE envelope case
-    try:
-        decoded = json.loads(base64.b64decode(root['payload'] + '=='))
-        pt = search(decoded)
-    except Exception:
-        pass
-
-if not pt:
-    sys.exit(2)
-print(pt)
-PY
-
-PRED_TYPE="$(python3 /tmp/get_pred.py || true)"
+# 3. Grep fallback (last resort)
+if [ -z "$PRED_TYPE" ]; then
+  PRED_TYPE="$(grep -o '"predicateType"[[:space:]]*:[[:space:]]*"[^"]*"' "$ATT_FILE" 2>/dev/null | head -n1 | cut -d'"' -f4 || true)"
+fi
 
 if [ -z "$PRED_TYPE" ]; then
   echo "Failed to extract predicateType from $ATT_FILE" >&2
   exit 1
 fi
 
-# Write policy.json
+# Write policy
 cat > policy.json <<POLICY
 {
   "expires": "2035-12-17T23:57:40-05:00",
@@ -157,7 +136,7 @@ cat > policy.json <<POLICY
 }
 POLICY
 
-# Sign if witness present
+# Optional sign
 if command -v witness >/dev/null 2>&1; then
   witness sign --signer-file-key-path testkey.pem -f policy.json -o policy-signed.json
 else
