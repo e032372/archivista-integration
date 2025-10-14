@@ -62,42 +62,59 @@ set -x
 ATT_FILE="attestations/build.json"
 [ -r "$ATT_FILE" ] || { echo "Missing $ATT_FILE" >&2; exit 1; }
 
-# Get one-line base64 public key
+# Base64 encode public key (single line)
 if command -v base64 >/dev/null 2>&1; then
   PUBKEY_PEM_B64="$(base64 -w0 testpub.pem 2>/dev/null || base64 < testpub.pem)"
 else
   PUBKEY_PEM_B64="$(openssl base64 -A < testpub.pem)"
 fi
 
-# Compute KEYID
-KEYID="$(printf '%s' "$PUBKEY_PEM_B64" | (base64 -d 2>/dev/null || openssl base64 -d 2>/dev/null) | (sha256sum 2>/dev/null || shasum -a 256) | awk '{print $1}')"
+# Compute KEYID (sha256 of decoded PEM)
+KEYID="$(
+  printf '%s' "$PUBKEY_PEM_B64" \
+  | (base64 -d 2>/dev/null || openssl base64 -d -A 2>/dev/null) \
+  | (sha256sum 2>/dev/null || shasum -a 256) \
+  | awk '{print $1}'
+)"
 
-PRED_TYPE=""
+extract_pred_type() {
+  # 1. Direct search in top-level JSON
+  local pt
+  pt="$(grep -o '"predicateType"[[:space:]]*:[[:space:]]*"[^"]*"' "$ATT_FILE" 2>/dev/null | head -n1 | cut -d'"' -f4 || true)"
+  [ -n "$pt" ] && { printf '%s' "$pt"; return 0; }
 
-# 1. jq direct search (recursive)
-if command -v jq >/dev/null 2>&1; then
-  PRED_TYPE="$(jq -r '.. | objects | select(has("predicateType")) | .predicateType | halt' "$ATT_FILE" 2>/dev/null || true)"
-  # 2. If empty, attempt DSSE payload decode then search
-  if [ -z "$PRED_TYPE" ]; then
-    HAS_PAYLOAD="$(jq -e 'has("payload")' "$ATT_FILE" 2>/dev/null || true)"
-    if [ "$HAS_PAYLOAD" = "true" ]; then
-      PT_FROM_PAYLOAD="$(jq -r '.payload' "$ATT_FILE" 2>/dev/null | base64 -d 2>/dev/null | jq -r '.. | objects | select(has("predicateType")) | .predicateType | halt' 2>/dev/null || true)"
-      [ -n "$PT_FROM_PAYLOAD" ] && PRED_TYPE="$PT_FROM_PAYLOAD"
-    fi
+  # 2. Attempt DSSE payload extraction
+  local payload
+  payload="$(grep -o '"payload"[[:space:]]*:[[:space:]]*"[^"]*"' "$ATT_FILE" 2>/dev/null | head -n1 | cut -d'"' -f4 || true)"
+  [ -z "$payload" ] && return 1
+
+  # Normalize (URL-safe to standard) and pad base64
+  payload="${payload//-/+}"
+  payload="${payload//_/\/}"
+  local mod=$(( ${#payload} % 4 ))
+  if [ $mod -ne 0 ]; then
+    payload="${payload}$(printf '=%.0s' $(seq 1 $((4-mod))))"
   fi
-fi
 
-# 3. Grep fallback (last resort)
-if [ -z "$PRED_TYPE" ]; then
-  PRED_TYPE="$(grep -o '"predicateType"[[:space:]]*:[[:space:]]*"[^"]*"' "$ATT_FILE" 2>/dev/null | head -n1 | cut -d'"' -f4 || true)"
-fi
+  # Decode payload to temp file
+  if ! printf '%s' "$payload" | base64 -d 2>/dev/null > /tmp/payload_decoded.json; then
+    return 1
+  fi
+
+  # 3. Search decoded JSON
+  pt="$(grep -o '"predicateType"[[:space:]]*:[[:space:]]*"[^"]*"' /tmp/payload_decoded.json 2>/dev/null | head -n1 | cut -d'"' -f4 || true)"
+  [ -n "$pt" ] && { printf '%s' "$pt"; return 0; }
+  return 1
+}
+
+PRED_TYPE="$(extract_pred_type || true)"
 
 if [ -z "$PRED_TYPE" ]; then
   echo "Failed to extract predicateType from $ATT_FILE" >&2
   exit 1
 fi
 
-# Write policy
+# Write policy.json
 cat > policy.json <<POLICY
 {
   "expires": "2035-12-17T23:57:40-05:00",
@@ -136,16 +153,18 @@ cat > policy.json <<POLICY
 }
 POLICY
 
-# Optional sign
+# Optional signing
 if command -v witness >/dev/null 2>&1; then
   witness sign --signer-file-key-path testkey.pem -f policy.json -o policy-signed.json
 else
   echo "witness CLI not found; skipping signing" >&2
 fi
+
+stash name: 'policy-out', includes: 'policy*.json'
 '''
-    stash name: 'policy-out', includes: 'policy*.json'
   }
 }
+
 
 
 
