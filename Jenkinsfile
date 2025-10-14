@@ -52,23 +52,22 @@ witness run \
     }
 
     stage('Create & Sign Policy') {
-      steps {
-        sh '''#!/usr/bin/env bash
+  steps {
+    sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
 
-# compute base64 PEM and KEYID as before
 PUBKEY_PEM_B64="$(base64 -w0 testpub.pem 2>/dev/null || openssl base64 -A < testpub.pem)"
 KEYID="$(echo -n "${PUBKEY_PEM_B64}" | base64 -d | sha256sum | awk '{print $1}')"
 
-# Try to extract predicateType directly from the attestation JSON
-PRED_TYPE="$(sed -n 's/.*"predicateType"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' attestations/build.json | head -n1 || true)"
+# Try to extract predicateType directly using awk (avoids backslash-escapes in sed)
+PRED_TYPE="$(awk 'match($0, /"predicateType"[[:space:]]*:[[:space:]]*"([^"]+)"/, a) { print a[1]; exit }' attestations/build.json || true)"
 
-# If not found, try to extract the DSSE payload (base64), decode it and look there
+# If not found, extract DSSE payload (base64), decode and search there
 if [ -z "${PRED_TYPE}" ]; then
-  PAYLOAD_B64="$(sed -n 's/.*"payload"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' attestations/build.json | head -n1 || true)"
+  PAYLOAD_B64="$(awk 'match($0, /"payload"[[:space:]]*:[[:space:]]*"([^"]+)"/, a) { print a[1]; exit }' attestations/build.json || true)"
   if [ -n "${PAYLOAD_B64}" ]; then
-    PRED_TYPE="$(echo "${PAYLOAD_B64}" | base64 -d 2>/dev/null | sed -n 's/.*"predicateType"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1 || true)"
+    PRED_TYPE="$(echo "${PAYLOAD_B64}" | base64 -d 2>/dev/null | awk 'match($0, /"predicateType"[[:space:]]*:[[:space:]]*"([^"]+)"/, a) { print a[1]; exit }' || true)"
   fi
 fi
 
@@ -77,7 +76,6 @@ if [ -z "${PRED_TYPE}" ]; then
   exit 1
 fi
 
-# write policy template with a collection verifier that specifies the predicate type
 cat > policy.json <<'POLICY'
 {
   "expires": "2035-12-17T23:57:40-05:00",
@@ -116,20 +114,18 @@ cat > policy.json <<'POLICY'
 }
 POLICY
 
-# replace placeholders
 sed -i "s|KEYID_PLACEHOLDER|${KEYID}|g" policy.json
 sed -i "s|PUBKEY_BASE64_PLACEHOLDER|${PUBKEY_PEM_B64}|g" policy.json
 sed -i "s|PRED_PLACEHOLDER|${PRED_TYPE}|g" policy.json
 
-# sign policy
 witness sign \
   --signer-file-key-path testkey.pem \
   -f policy.json \
   -o policy-signed.json
 '''
-        stash name: 'policy-out', includes: 'policy*.json'
-      }
-    }
+  }
+}
+
 
     stage('Verify (policy-based)') {
       when { expression { return fileExists('testpub.pem') } }
