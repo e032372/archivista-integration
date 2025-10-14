@@ -50,7 +50,7 @@ witness run \
       }
     }
 
-    stage('Create & Sign Policy') {
+  stage('Create & Sign Policy') {
   steps {
     sh '''#!/usr/bin/env bash
 set -euo pipefail
@@ -159,6 +159,28 @@ fi
   }
 }
 
+
+    stage('Verify (policy-based)') {
+      when { expression { return fileExists('testpub.pem') } }
+      steps {
+        unstash 'witness-out'
+        unstash 'policy-out'
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -x
+test -f dist/app.txt
+test -f attestations/build.json
+test -f policy-signed.json
+
+witness verify \
+  --attestations attestations/build.json \
+  -f dist/app.txt \
+  -p policy-signed.json \
+  -k testpub.pem
+'''
+      }
+    }
+  }
 
   post {
     always {
