@@ -80,10 +80,6 @@ witness run \
 set -euo pipefail
 set -x
 SUBCMD=$(cat .witness_archi_subcmd 2>/dev/null || echo none)
-if [ "$SUBCMD" = "none" ]; then
-  echo "Skipping remote verification (no archivist(a) subcommand in this Witness build)."
-  exit 0
-fi
 
 REMOTE=attestations/remote/build-remote.json
 DEC_REMOTE=attestations/remote/build-remote.decoded.json
