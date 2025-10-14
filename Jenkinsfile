@@ -1,3 +1,4 @@
+// Jenkinsfile
 pipeline {
   agent any
 
@@ -57,18 +58,18 @@ witness run \
 set -euo pipefail
 set -x
 
-# Lightweight optional JSON glance (no python dependency)
 if command -v jq >/dev/null 2>&1; then
-  jq 'keys' attestations/build.json
+  jq 'keys' attestations/build.json || true
 else
   echo "jq not found; showing first 200 chars:"
   head -c 200 attestations/build.json || true
   echo
 fi
 
+# Updated: file passed positionally (no --attestation flag)
 witness verify \
-  --attestation attestations/build.json \
-  --public-key testpub.pem
+  --public-key testpub.pem \
+  attestations/build.json
 
 grep -q "hello" dist/app.txt
 echo "Local attestation verification succeeded."
@@ -89,7 +90,7 @@ witness archivista get \
   --output attestations/remote/build-remote.json
 
 if command -v jq >/dev/null 2>&1; then
-  jq 'keys' attestations/remote/build-remote.json
+  jq 'keys' attestations/remote/build-remote.json || true
 else
   echo "jq not found; showing first 200 chars:"
   head -c 200 attestations/remote/build-remote.json || true
@@ -97,8 +98,8 @@ else
 fi
 
 witness verify \
-  --attestation attestations/remote/build-remote.json \
-  --public-key testpub.pem
+  --public-key testpub.pem \
+  attestations/remote/build-remote.json
 
 echo "Remote (Archivista) attestation verification succeeded."
 '''
