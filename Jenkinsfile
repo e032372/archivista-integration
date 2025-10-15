@@ -72,8 +72,10 @@ witness run \
         stash name: 'witness-out', includes: 'dist/**,attestations/**,.witness_archi_subcmd'
       }
     }
-
-  stage('Verify Attestation (from Archivista)') {
+stage('Verify Attestation (from Archivista)') {
+  environment {
+    SUBJECT_HASH = '' // optionally set a known hash here
+  }
   steps {
     unstash 'witness-out'
     sh '''#!/usr/bin/env bash
@@ -88,12 +90,14 @@ DEC_REMOTE="${REMOTE_DIR}/build-remote.decoded.json"
 
 mkdir -p "$REMOTE_DIR"
 
-# Extract subject hash from local attestation (assumes it's available)
-SUBJECT_HASH=$(jq -r '.subject[0].digest.sha256' witness.json)
-
-if [ -z "$SUBJECT_HASH" ]; then
-  echo "No subject hash found in witness.json"
-  exit 1
+# Try to extract subject hash from witness.json if not set
+if [ -z "${SUBJECT_HASH:-}" ]; then
+  if [ -f witness.json ]; then
+    SUBJECT_HASH=$(jq -r '.subject[0].digest.sha256' witness.json)
+  else
+    echo "Error: witness.json not found and SUBJECT_HASH not set."
+    exit 1
+  fi
 fi
 
 # Fetch attestation payload from Archivista using subject hash
