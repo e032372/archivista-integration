@@ -88,16 +88,16 @@ DEC_REMOTE="${REMOTE_DIR}/build-remote.decoded.json"
 
 mkdir -p "$REMOTE_DIR"
 
-# Fetch attestation payload from Archivista using GraphQL
+# Corrected GraphQL query to fetch attestation payload
 curl -s -X POST "${ARCHIVISTA_URL}/graphql" \
   -H "Content-Type: application/json" \
-  -d '{"query":"query { attestations(step: \"build\") { payload } }"}' \
+  -d '{"query":"query { attestations(step: \\"'"${STEP_NAME}"'\\") { payload } }"}' \
   | jq -r '.data.attestations[0].payload' > "$REMOTE_B64"
 
 # Decode base64 payload to JSON
 base64 -d "$REMOTE_B64" > "$REMOTE_JSON"
 
-# Optional: decode again for inspection
+# Decode inner payload for subject extraction
 jq -r '.payload' "$REMOTE_JSON" | base64 -d > "$DEC_REMOTE"
 
 echo "Remote subjects (name sha256):"
