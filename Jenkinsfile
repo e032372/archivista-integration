@@ -73,7 +73,7 @@ witness run \
       }
     }
 
-    stage('Verify Attestation (from Archivista)') {
+  stage('Verify Attestation (from Archivista)') {
   steps {
     unstash 'witness-out'
     sh '''#!/usr/bin/env bash
@@ -88,19 +88,27 @@ DEC_REMOTE="${REMOTE_DIR}/build-remote.decoded.json"
 
 mkdir -p "$REMOTE_DIR"
 
-# Fetch attestation payload from Archivista using properly escaped GraphQL query
+# Extract subject hash from local attestation (assumes it's available)
+SUBJECT_HASH=$(jq -r '.subject[0].digest.sha256' witness.json)
+
+if [ -z "$SUBJECT_HASH" ]; then
+  echo "No subject hash found in witness.json"
+  exit 1
+fi
+
+# Fetch attestation payload from Archivista using subject hash
 RESPONSE=$(curl -s -X POST "${ARCHIVISTA_URL}/v1/query" \
   -H "Content-Type: application/json" \
-  -d '{"query":"query { attestations(step: \\"'"${STEP_NAME}"'\\") { payload } }"}')
+  -d '{"query":"query { attestationsBySubject(subject: \\"sha256:'"$SUBJECT_HASH"\\") { payload } }"}')
 
 echo "Raw response from Archivista:"
 echo "$RESPONSE"
 
 # Extract payload safely
-PAYLOAD=$(echo "$RESPONSE" | jq -r '.data.attestations[0].payload // empty')
+PAYLOAD=$(echo "$RESPONSE" | jq -r '.data.attestationsBySubject[0].payload // empty')
 
 if [ -z "$PAYLOAD" ]; then
-  echo "No attestation payload found for step '${STEP_NAME}'."
+  echo "No attestation payload found for subject hash '${SUBJECT_HASH}'."
   exit 1
 fi
 
