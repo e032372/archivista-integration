@@ -80,27 +80,17 @@ witness run \
 set -euo pipefail
 set -x
 
-# Read subcommand from file or fallback to 'get'
-SUBCMD=$(cat .witness_archi_subcmd 2>/dev/null || echo get)
-
-# Validate subcommand against witness CLI
-VALID_SUBCMDS=$(witness --help | awk '/Available Commands:/,/Flags:/' | awk 'NR>1 && $1 != "Flags:" {print $1}')
-if ! echo "$VALID_SUBCMDS" | grep -qx "$SUBCMD"; then
-  echo "Invalid witness subcommand '$SUBCMD'. Falling back to 'get'."
-  SUBCMD="get"
-fi
-
+# Use 'run' to retrieve attestation from Archivista
+STEP_NAME="build"
 REMOTE=attestations/remote/build-remote.json
 DEC_REMOTE=attestations/remote/build-remote.decoded.json
 mkdir -p attestations/remote
 
-# Run witness get command
-witness "$SUBCMD" get \
+witness run \
   --archivista-server "${ARCHIVISTA_URL}" \
-  --step build \
+  --step "${STEP_NAME}" \
   --output "${REMOTE}"
 
-# Decode payload
 jq -r '.payload' "$REMOTE" | base64 -d > "$DEC_REMOTE"
 
 echo "Remote subjects (name sha256):"
