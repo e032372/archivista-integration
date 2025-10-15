@@ -1,0 +1,24 @@
+# Ignore build outputs
+dist/
+build/
+
+# Ignore attestation files
+attestations/
+
+# Ignore policy files
+policy*.json
+
+# Ignore subcommand detection file
+.witness_archi_subcmd
+
+# Ignore OS and editor files
+.DS_Store
+.idea/
+*.swp
+*.swo
+
+# Ignore node_modules if using Node.js
+node_modules/
+
+# Ignore logs
+*.log
