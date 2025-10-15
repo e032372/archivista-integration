@@ -53,23 +53,6 @@ openssl pkey -in testkey.pem -pubout > testpub.pem
 '''
       }
     }
-
-    stage('Build sample app') {
-      steps {
-        sh '''
-          set -euxo pipefail
-          cd pipeline/sample-app
-          # initialize a tiny module just for the build
-          if [ ! -f go.mod ]; then
-            go mod init example.com/sample || true
-          fi
-          go mod tidy
-          go build -o ../../sample-binary
-          cd ../../
-          file sample-binary || true
-        '''
-      }
-    }
     
     stage('Build & Attest (store in Archivista)') {
       steps {
