@@ -112,4 +112,3 @@ witness verify \
     }
   }
 }
-``
