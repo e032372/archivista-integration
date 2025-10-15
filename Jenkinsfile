@@ -28,19 +28,16 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 jq --version || true
 
-echo "Detecting archivist/archivista support..."
-HELP_OUT=$(witness help 2>&1 || true)
+echo "Detecting archivista support..."
+HELP_OUT=$(witness run --help 2>&1 || true)
 echo "$HELP_OUT" | head -n 50
 
-if echo "$HELP_OUT" | grep -q -- '--archivist'; then
-  echo archivist > .witness_archi_subcmd
-  echo "Using support: archivist"
-elif echo "$HELP_OUT" | grep -q -- '--archivista-server'; then
+if echo "$HELP_OUT" | grep -q -- '--archivista-server'; then
   echo archivista > .witness_archi_subcmd
   echo "Using support: archivista"
 else
   echo none > .witness_archi_subcmd
-  echo "No archivist/archivista support available; remote retrieval will be skipped."
+  echo "No archivista support available; remote retrieval will be skipped."
 fi
 '''
       }
