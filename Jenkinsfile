@@ -80,12 +80,28 @@ witness run \
 set -euo pipefail
 set -x
 
-REMOTE=attestations/remote/build-remote.json
-DEC_REMOTE=attestations/remote/build-remote.decoded.json
-mkdir -p attestations/remote
+STEP_NAME="build"
+REMOTE_DIR="attestations/remote"
+REMOTE_B64="${REMOTE_DIR}/build-remote.b64"
+REMOTE_JSON="${REMOTE_DIR}/build-remote.json"
+DEC_REMOTE="${REMOTE_DIR}/build-remote.decoded.json"
 
-# Assume attestation is already downloaded to $REMOTE
-jq -r '.payload' "$REMOTE" | base64 -d > "$DEC_REMOTE"
+mkdir -p "$REMOTE_DIR"
+
+# Fetch attestation payload from Archivista using GraphQL
+curl -s -X POST "${ARCHIVISTA_URL}/graphql" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ attestations(step: \\"'"${STEP_NAME}"'\\") { payload } }"}' \
+  | jq -r '.data.attestations[0].payload' > "$REMOTE_B64"
+
+# Decode base64 payload to JSON
+base64 -d "$REMOTE_B64" > "$REMOTE_JSON"
+
+# Optional: decode again for inspection
+jq -r '.payload' "$REMOTE_JSON" | base64 -d > "$DEC_REMOTE"
+
+echo "Remote subjects (name sha256):"
+jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC_REMOTE" || true
 
 REMOTE_SUBJECT_FLAGS=""
 while IFS=$'\\t' read -r name digest; do
@@ -98,7 +114,7 @@ echo "Using remote subject flags:${REMOTE_SUBJECT_FLAGS}"
 
 set +e
 witness verify \
-  --artifactfile "$REMOTE" \
+  --artifactfile "$REMOTE_JSON" \
   --publickey testpub.pem \
   --policy policy-signed.json \
   ${REMOTE_SUBJECT_FLAGS}
