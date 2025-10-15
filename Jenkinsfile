@@ -35,7 +35,7 @@ echo "$HELP_OUT" | head -n 50
 if echo "$HELP_OUT" | grep -q -- '--archivist'; then
   echo archivist > .witness_archi_subcmd
   echo "Using support: archivist"
-elif echo "$HELP_OUT" | grep -q -- '--archivista'; then
+elif echo "$HELP_OUT" | grep -q -- '--archivista-server'; then
   echo archivista > .witness_archi_subcmd
   echo "Using support: archivista"
 else
