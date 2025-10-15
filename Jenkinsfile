@@ -80,9 +80,13 @@ witness run \
 set -euo pipefail
 set -x
 
-SUBCMD=$(cat .witness_archi_subcmd 2>/dev/null || echo none)
-if [ "$SUBCMD" = "none" ]; then
-  echo "Skipping remote verification: no archivist/archivista subcommand."
+# Determine the subcommand to use
+SUBCMD="${WITNESS_SUBCMD:-$(cat .witness_archi_subcmd 2>/dev/null || echo none)}"
+
+# Validate subcommand
+VALID_SUBCMDS=$(witness --help | awk '/Available Commands:/,/Flags:/' | awk 'NR>1 && $1 != "Flags:" {print $1}')
+if ! echo "$VALID_SUBCMDS" | grep -qx "$SUBCMD"; then
+  echo "Skipping remote verification: invalid witness subcommand '$SUBCMD'."
   exit 0
 fi
 
@@ -90,11 +94,13 @@ REMOTE=attestations/remote/build-remote.json
 DEC_REMOTE=attestations/remote/build-remote.decoded.json
 mkdir -p attestations/remote
 
+# Run witness get command
 witness "$SUBCMD" get \
   --archivista-server "${ARCHIVISTA_URL}" \
   --step build \
   --output "${REMOTE}"
 
+# Decode payload
 jq -r '.payload' "$REMOTE" | base64 -d > "$DEC_REMOTE"
 
 echo "Remote subjects (name sha256):"
