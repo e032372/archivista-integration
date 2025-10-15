@@ -88,11 +88,23 @@ DEC_REMOTE="${REMOTE_DIR}/build-remote.decoded.json"
 
 mkdir -p "$REMOTE_DIR"
 
-# Corrected GraphQL query to fetch attestation payload
-curl -s -X POST "${ARCHIVISTA_URL}/graphql" \
+# Fetch attestation payload from Archivista using properly escaped GraphQL query
+RESPONSE=$(curl -s -X POST "${ARCHIVISTA_URL}/graphql" \
   -H "Content-Type: application/json" \
-  -d '{"query":"query { attestations(step: \\"'"${STEP_NAME}"'\\") { payload } }"}' \
-  | jq -r '.data.attestations[0].payload' > "$REMOTE_B64"
+  -d '{"query":"query { attestations(step: \\"'"${STEP_NAME}"'\\") { payload } }"}')
+
+echo "Raw response from Archivista:"
+echo "$RESPONSE"
+
+# Extract payload safely
+PAYLOAD=$(echo "$RESPONSE" | jq -r '.data.attestations[0].payload // empty')
+
+if [ -z "$PAYLOAD" ]; then
+  echo "No attestation payload found for step '${STEP_NAME}'."
+  exit 1
+fi
+
+echo "$PAYLOAD" > "$REMOTE_B64"
 
 # Decode base64 payload to JSON
 base64 -d "$REMOTE_B64" > "$REMOTE_JSON"
