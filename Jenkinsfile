@@ -80,14 +80,14 @@ witness run \
 set -euo pipefail
 set -x
 
-# Determine the subcommand to use
-SUBCMD="${WITNESS_SUBCMD:-$(cat .witness_archi_subcmd 2>/dev/null || echo none)}"
+# Read subcommand from file or fallback to 'get'
+SUBCMD=$(cat .witness_archi_subcmd 2>/dev/null || echo get)
 
-# Validate subcommand
+# Validate subcommand against witness CLI
 VALID_SUBCMDS=$(witness --help | awk '/Available Commands:/,/Flags:/' | awk 'NR>1 && $1 != "Flags:" {print $1}')
 if ! echo "$VALID_SUBCMDS" | grep -qx "$SUBCMD"; then
-  echo "Skipping remote verification: invalid witness subcommand '$SUBCMD'."
-  exit 0
+  echo "Invalid witness subcommand '$SUBCMD'. Falling back to 'get'."
+  SUBCMD="get"
 fi
 
 REMOTE=attestations/remote/build-remote.json
@@ -130,6 +130,7 @@ echo "Remote attestation verification succeeded."
 '''
   }
 }
+
   }
 
   post {
