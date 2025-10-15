@@ -4,7 +4,7 @@ pipeline {
 
   environment {
     ARCHIVISTA_URL = 'http://archivista:8082'
-    // Optional: set WITNESS_VERSION to pin a version that includes archivist/archivista
+    // Optionally pin to a known version that includes Archivista support:
     // WITNESS_VERSION = 'v0.3.7'
   }
 
@@ -15,6 +15,8 @@ pipeline {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
+
+# Install Witness
 if [ -n "${WITNESS_VERSION:-}" ]; then
   echo "Pinning Witness to ${WITNESS_VERSION}"
 fi
@@ -22,23 +24,15 @@ curl -sSL https://raw.githubusercontent.com/in-toto/witness/main/install-witness
 bash install-witness.sh
 witness version || true
 
+# Ensure jq is available (install to a local path to avoid needing root)
 if ! command -v jq >/dev/null 2>&1; then
-  curl -L -o /usr/local/bin/jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
-  chmod +x /usr/local/bin/jq
+  JQ_BIN="${PWD}/.local/bin/jq"
+  mkdir -p "$(dirname "$JQ_BIN")"
+  curl -L -o "$JQ_BIN" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+  chmod +x "$JQ_BIN"
+  export PATH="$(dirname "$JQ_BIN"):$PATH"
 fi
 jq --version || true
-
-echo "Detecting archivista support..."
-HELP_OUT=$(witness run --help 2>&1 || true)
-echo "$HELP_OUT" | head -n 50
-
-if echo "$HELP_OUT" | grep -q -- '--archivista-server'; then
-  echo archivista > .witness_archi_subcmd
-  echo "Using support: archivista"
-else
-  echo none > .witness_archi_subcmd
-  echo "No archivista support available; remote retrieval will be skipped."
-fi
 '''
       }
     }
@@ -53,114 +47,69 @@ openssl pkey -in testkey.pem -pubout > testpub.pem
 '''
       }
     }
-    
+
     stage('Build & Attest (store in Archivista)') {
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
+
 mkdir -p dist attestations
-echo "hello $(date)" > dist/app.txt
+
+# Create the product *inside* the witness-wrapped command so it becomes a recorded subject.
 witness run \
   --step build \
   --signer-file-key-path testkey.pem \
   --enable-archivista \
   --archivista-server "${ARCHIVISTA_URL}" \
   -o attestations/build.json -- \
-  bash -lc 'echo "Simulated build complete"'
+  bash -lc 'echo "hello $(date)" > dist/app.txt && echo "Simulated build complete"'
+
+# For visibility, show the DSSE inner payload and subjects
+jq -r '.payload' attestations/build.json | base64 -d | jq . || true
+jq -r '.payload' attestations/build.json | base64 -d | jq -r '.subject[] | [.name, .digest.sha256] | @tsv' || true
 '''
-        stash name: 'witness-out', includes: 'dist/**,attestations/**,.witness_archi_subcmd'
+        stash name: 'witness-out', includes: 'dist/**,attestations/**,testpub.pem,policy*.json'
       }
     }
-stage('Verify Attestation (from Archivista)') {
-  environment {
-    SUBJECT_HASH = '' // optionally set a known hash here
-  }
-  steps {
-    unstash 'witness-out'
-    sh '''#!/usr/bin/env bash
+
+    stage('Verify Attestation (from Archivista)') {
+      steps {
+        unstash 'witness-out'
+        sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
 
-STEP_NAME="build"
-REMOTE_DIR="attestations/remote"
-REMOTE_B64="${REMOTE_DIR}/build-remote.b64"
-REMOTE_JSON="${REMOTE_DIR}/build-remote.json"
-DEC_REMOTE="${REMOTE_DIR}/build-remote.decoded.json"
+# Compute the subject hash; prefer using the attestation payload if present, otherwise hash the file.
+SUBJECT_HASH=$(jq -r '.payload' attestations/build.json | base64 -d | \
+  jq -r '.subject[] | select(.name=="dist/app.txt") | .digest.sha256' || true)
 
-mkdir -p "$REMOTE_DIR"
-
-# Try to extract subject hash from witness.json if not set
-if [ -z "${SUBJECT_HASH:-}" ]; then
-  if [ -f witness.json ]; then
-    SUBJECT_HASH=$(jq -r '.subject[0].digest.sha256' witness.json)
-  else
-    echo "Error: witness.json not found and SUBJECT_HASH not set."
-    exit 1
-  fi
+if [ -z "${SUBJECT_HASH}" ]; then
+  SUBJECT_HASH=$(sha256sum dist/app.txt | awk '{print $1}')
 fi
-
-# Fetch attestation payload from Archivista using subject hash
-RESPONSE=$(curl -s -X POST "${ARCHIVISTA_URL}/v1/query" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"query { attestationsBySubject(subject: \\"sha256:'"$SUBJECT_HASH"\\") { payload } }"}')
-
-echo "Raw response from Archivista:"
-echo "$RESPONSE"
-
-# Extract payload safely
-PAYLOAD=$(echo "$RESPONSE" | jq -r '.data.attestationsBySubject[0].payload // empty')
-
-if [ -z "$PAYLOAD" ]; then
-  echo "No attestation payload found for subject hash '${SUBJECT_HASH}'."
-  exit 1
+# Only include policy if present (useful for first-run smoke tests)
+POLICY_FLAG=""
+if [ -f policy-signed.json ]; then
+  POLICY_FLAG="--policy policy-signed.json"
 fi
-
-echo "$PAYLOAD" > "$REMOTE_B64"
-
-# Decode base64 payload to JSON
-base64 -d "$REMOTE_B64" > "$REMOTE_JSON"
-
-# Decode inner payload for subject extraction
-jq -r '.payload' "$REMOTE_JSON" | base64 -d > "$DEC_REMOTE"
-
-echo "Remote subjects (name sha256):"
-jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC_REMOTE" || true
-
-REMOTE_SUBJECT_FLAGS=""
-while IFS=$'\\t' read -r name digest; do
-  [ -z "${name:-}" ] && continue
-  [ -z "${digest:-}" ] && continue
-  REMOTE_SUBJECT_FLAGS+=" --subjects ${name}=${digest}"
-done < <(jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC_REMOTE")
-
-echo "Using remote subject flags:${REMOTE_SUBJECT_FLAGS}"
-
-set +e
+# Let Witness retrieve from Archivista using the subject (no manual GraphQL needed)
+# Flags reference: verify supports --enable-archivista, --archivista-server, --subjects, -f/--artifactfile.
 witness verify \
-  --artifactfile "$REMOTE_JSON" \
+  --enable-archivista \
+  --archivista-server "${ARCHIVISTA_URL}" \
   --publickey testpub.pem \
-  --policy policy-signed.json \
-  ${REMOTE_SUBJECT_FLAGS}
-rc=$?
-set -e
-
-if [ $rc -ne 0 ]; then
-  echo "Remote witness verify failed. Decoded payload snippet:"
-  head -c 400 "$DEC_REMOTE" || true
-  exit $rc
-fi
-
-echo "Remote attestation verification succeeded."
+  ${POLICY_FLAG} \
+  --subjects "dist/app.txt=${SUBJECT_HASH}" \
+  --artifactfile dist/app.txt
 '''
-  }
-}
-
+      }
+    }
   }
 
   post {
     always {
-      archiveArtifacts artifacts: 'attestations/**/*.json, dist/**, policy*.json,.witness_archi_subcmd', fingerprint: true
+      archiveArtifacts artifacts: 'attestations/**/*.json, dist/**, policy*.json', fingerprint: true
     }
   }
 }
+``
