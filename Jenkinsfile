@@ -74,11 +74,12 @@ witness run \
     }
 
     stage('Verify Attestation (from Archivista)') {
-      steps {
-        unstash 'witness-out'
-        sh '''#!/usr/bin/env bash
+  steps {
+    unstash 'witness-out'
+    sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
+
 SUBCMD=$(cat .witness_archi_subcmd 2>/dev/null || echo none)
 if [ "$SUBCMD" = "none" ]; then
   echo "Skipping remote verification: no archivist/archivista subcommand."
@@ -112,15 +113,17 @@ set +e
 witness verify "$REMOTE" --publickey testpub.pem ${REMOTE_SUBJECT_FLAGS}
 rc=$?
 set -e
+
 if [ $rc -ne 0 ]; then
   echo "Remote witness verify failed. Decoded payload snippet:"
   head -c 400 "$DEC_REMOTE" || true
   exit $rc
 fi
+
 echo "Remote attestation verification succeeded."
 '''
-      }
-    }
+  }
+}
   }
 
   post {
