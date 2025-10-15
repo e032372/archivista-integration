@@ -91,7 +91,7 @@ mkdir -p "$REMOTE_DIR"
 # Fetch attestation payload from Archivista using GraphQL
 curl -s -X POST "${ARCHIVISTA_URL}/graphql" \
   -H "Content-Type: application/json" \
-  -d '{"query":"{ attestations(step: \\"'"${STEP_NAME}"'\\") { payload } }"}' \
+  -d '{"query":"query { attestations(step: \"build\") { payload } }"}' \
   | jq -r '.data.attestations[0].payload' > "$REMOTE_B64"
 
 # Decode base64 payload to JSON
