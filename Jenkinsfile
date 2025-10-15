@@ -80,43 +80,13 @@ witness run \
 set -euo pipefail
 set -x
 
-# Use 'run' to retrieve attestation from Archivista
 STEP_NAME="build"
-REMOTE=attestations/remote/build-remote.json
-DEC_REMOTE=attestations/remote/build-remote.decoded.json
-mkdir -p attestations/remote
 
-witness run \
+# Verify attestation from Archivista
+witness verify \
   --archivista-server "${ARCHIVISTA_URL}" \
   --step "${STEP_NAME}" \
-  --output "${REMOTE}"
-
-jq -r '.payload' "$REMOTE" | base64 -d > "$DEC_REMOTE"
-
-echo "Remote subjects (name sha256):"
-jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC_REMOTE" || true
-
-REMOTE_SUBJECT_FLAGS=""
-while IFS=$'\\t' read -r name digest; do
-  [ -z "${name:-}" ] && continue
-  [ -z "${digest:-}" ] && continue
-  REMOTE_SUBJECT_FLAGS+=" --subjects ${name}=${digest}"
-done < <(jq -r '.subject[] | [.name, .digest.sha256] | @tsv' "$DEC_REMOTE")
-
-echo "Using remote subject flags:${REMOTE_SUBJECT_FLAGS}"
-
-set +e
-witness verify "$REMOTE" --publickey testpub.pem ${REMOTE_SUBJECT_FLAGS}
-rc=$?
-set -e
-
-if [ $rc -ne 0 ]; then
-  echo "Remote witness verify failed. Decoded payload snippet:"
-  head -c 400 "$DEC_REMOTE" || true
-  exit $rc
-fi
-
-echo "Remote attestation verification succeeded."
+  --publickey testpub.pem
 '''
   }
 }
