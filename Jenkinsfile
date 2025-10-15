@@ -89,7 +89,7 @@ DEC_REMOTE="${REMOTE_DIR}/build-remote.decoded.json"
 mkdir -p "$REMOTE_DIR"
 
 # Fetch attestation payload from Archivista using properly escaped GraphQL query
-RESPONSE=$(curl -s -X POST "${ARCHIVISTA_URL}/graphql" \
+RESPONSE=$(curl -s -X POST "${ARCHIVISTA_URL}" \
   -H "Content-Type: application/json" \
   -d '{"query":"query { attestations(step: \\"'"${STEP_NAME}"'\\") { payload } }"}')
 
