@@ -93,16 +93,13 @@ if [ -z "${SUBJECT_HASH}" ]; then
   SUBJECT_HASH=$(sha256sum dist/app.txt | awk '{print $1}')
 fi
 
-# --- Build a minimal permissive policy that trusts the attestation signer (testkey.pem) ---
+# --- Minimal permissive policy that trusts the attestation signer (testkey.pem) ---
 
-# 1) Compute keyid as sha256 over DER SPKI
-openssl pkey -pubin -in testpub.pem -outform DER > testpub.der
-PUB_KEY_ID=$(sha256sum testpub.der | awk '{print $1}')
+# keyid MUST match what Witness recomputes from the same key bytes we embed.
+PUB_KEY_ID=$(sha256sum testpub.pem | awk '{print $1}')
+PUB_KEY_PEM_B64=$(base64 testpub.pem | tr -d '\n')
 
-# 2) Encode the PEM text as base64 for policy.publickeys[].key (NOT DER)
-PUB_KEY_PEM_B64=$(base64 testpub.pem | tr -d '\\n')
-
-# (Optional sanity check: ensure the decode starts with a PEM header)
+# Sanity: the decoded value should start with the PEM header.
 printf '%s' "$PUB_KEY_PEM_B64" | base64 -d | head -1 || true
 
 cat > policy.json <<POLICY
