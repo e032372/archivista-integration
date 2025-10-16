@@ -97,6 +97,8 @@ fi
 witness verify \
   --enable-archivista \
   --archivista-server "${ARCHIVISTA_URL}" \
+  --policy policy-signed.json \
+  --publickey policy-public.pem \
   --subjects "dist/app.txt=${SUBJECT_HASH}" \
   --artifactfile dist/app.txt
 '''
