@@ -94,6 +94,11 @@ if [ -f policy-signed.json ]; then
 fi
 # Let Witness retrieve from Archivista using the subject (no manual GraphQL needed)
 # Flags reference: verify supports --enable-archivista, --archivista-server, --subjects, -f/--artifactfile.
+
+# Create (or update) your policy.json first, then sign it:
+witness sign -f policy.json -o policy-signed.json -k testkey.pem
+
+# Now verify using the matching public key:
 witness verify \
   --enable-archivista \
   --archivista-server "${ARCHIVISTA_URL}" \
@@ -101,6 +106,7 @@ witness verify \
   --publickey testpub.pem \
   --subjects "dist/app.txt=${SUBJECT_HASH}" \
   --artifactfile dist/app.txt
+
 '''
       }
     }
