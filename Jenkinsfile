@@ -147,4 +147,3 @@ witness verify \
     }
   }
 }
-``
