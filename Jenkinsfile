@@ -30,8 +30,8 @@ if ! command -v jq >/dev/null 2>&1; then
   mkdir -p "$(dirname "$JQ_BIN")"
   curl -L -o "$JQ_BIN" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
   chmod +x "$JQ_BIN"
-  export PATH="$(dirname "$JQ_BIN"):$PATH"
 fi
+
 jq --version || true
 '''
       }
@@ -54,6 +54,9 @@ openssl pkey -in testkey.pem -pubout > testpub.pem
 set -euo pipefail
 set -x
 
+# Ensure local jq (if installed) is on PATH for this step too
+export PATH="${PWD}/.local/bin:${PATH}"
+
 mkdir -p dist attestations
 
 # Create the product *inside* the witness-wrapped command so it becomes a recorded subject.
@@ -69,7 +72,7 @@ witness run \
 jq -r '.payload' attestations/build.json | base64 -d | jq . || true
 jq -r '.payload' attestations/build.json | base64 -d | jq -r '.subject[] | [.name, .digest.sha256] | @tsv' || true
 '''
-        stash name: 'witness-out', includes: 'dist/**,attestations/**,testpub.pem,policy*.json'
+        stash name: 'witness-out', includes: 'dist/**,attestations/**,testpub.pem'
       }
     }
 
@@ -80,6 +83,9 @@ jq -r '.payload' attestations/build.json | base64 -d | jq -r '.subject[] | [.nam
 set -euo pipefail
 set -x
 
+# Ensure local jq (if installed) is on PATH for this step too
+export PATH="${PWD}/.local/bin:${PATH}"
+
 # Compute the subject hash; prefer using the attestation payload if present, otherwise hash the file.
 SUBJECT_HASH=$(jq -r '.payload' attestations/build.json | base64 -d | \
   jq -r '.subject[] | select(.name=="dist/app.txt") | .digest.sha256' || true)
@@ -87,18 +93,42 @@ SUBJECT_HASH=$(jq -r '.payload' attestations/build.json | base64 -d | \
 if [ -z "${SUBJECT_HASH}" ]; then
   SUBJECT_HASH=$(sha256sum dist/app.txt | awk '{print $1}')
 fi
-# Only include policy if present (useful for first-run smoke tests)
-POLICY_FLAG=""
-if [ -f policy-signed.json ]; then
-  POLICY_FLAG="--policy policy-signed.json"
-fi
-# Let Witness retrieve from Archivista using the subject (no manual GraphQL needed)
-# Flags reference: verify supports --enable-archivista, --archivista-server, --subjects, -f/--artifactfile.
 
-# Create (or update) your policy.json first, then sign it:
+# --- Build a minimal permissive policy that trusts the attestation signer (testkey.pem) ---
+
+# Derive DER, keyid (sha256 of DER), and base64 for policy.publickeys
+openssl pkey -pubin -in testpub.pem -outform DER > testpub.der
+PUB_KEY_ID=$(sha256sum testpub.der | awk '{print $1}')
+PUB_KEY_B64=$(base64 testpub.der | tr -d '\\n')
+
+cat > policy.json <<POLICY
+{
+  "expires": "2035-01-01T00:00:00Z",
+  "publickeys": {
+    "${PUB_KEY_ID}": {
+      "keyid": "${PUB_KEY_ID}",
+      "key": "${PUB_KEY_B64}"
+    }
+  },
+  "steps": {
+    "build": {
+      "name": "build",
+      "functionaries": [
+        { "type": "publickey", "publickeyid": "${PUB_KEY_ID}" }
+      ],
+      "attestations": [
+        { "type": "https://witness.dev/attestations/material/v0.1", "regopolicies": [] },
+        { "type": "https://witness.dev/attestations/product/v0.1",  "regopolicies": [] }
+      ]
+    }
+  }
+}
+POLICY
+
+# Sign the policy with the same key used to sign the attestation collection
 witness sign -f policy.json -o policy-signed.json -k testkey.pem
 
-# Now verify using the matching public key:
+# Verify: pull attestations from Archivista using the subject and enforce the policy
 witness verify \
   --enable-archivista \
   --archivista-server "${ARCHIVISTA_URL}" \
@@ -106,7 +136,6 @@ witness verify \
   --publickey testpub.pem \
   --subjects "dist/app.txt=${SUBJECT_HASH}" \
   --artifactfile dist/app.txt
-
 '''
       }
     }
@@ -118,3 +147,4 @@ witness verify \
     }
   }
 }
+``
