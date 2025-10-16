@@ -53,7 +53,6 @@ openssl pkey -in testkey.pem -pubout > testpub.pem
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -x
-
 # Ensure local jq (if installed) is on PATH for this step too
 export PATH="${PWD}/.local/bin:${PATH}"
 
@@ -96,10 +95,15 @@ fi
 
 # --- Build a minimal permissive policy that trusts the attestation signer (testkey.pem) ---
 
-# Derive DER, keyid (sha256 of DER), and base64 for policy.publickeys
+# 1) Compute keyid as sha256 over DER SPKI
 openssl pkey -pubin -in testpub.pem -outform DER > testpub.der
 PUB_KEY_ID=$(sha256sum testpub.der | awk '{print $1}')
-PUB_KEY_B64=$(base64 testpub.der | tr -d '\\n')
+
+# 2) Encode the PEM text as base64 for policy.publickeys[].key (NOT DER)
+PUB_KEY_PEM_B64=$(base64 testpub.pem | tr -d '\\n')
+
+# (Optional sanity check: ensure the decode starts with a PEM header)
+printf '%s' "$PUB_KEY_PEM_B64" | base64 -d | head -1 || true
 
 cat > policy.json <<POLICY
 {
@@ -107,7 +111,7 @@ cat > policy.json <<POLICY
   "publickeys": {
     "${PUB_KEY_ID}": {
       "keyid": "${PUB_KEY_ID}",
-      "key": "${PUB_KEY_B64}"
+      "key": "${PUB_KEY_PEM_B64}"
     }
   },
   "steps": {
